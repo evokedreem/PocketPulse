@@ -1,0 +1,51 @@
+name: Expo CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test -- --runInBand
+
+      - name: Validate Expo dependencies
+        run: npm run doctor
+
+      - name: Validate deployment files
+        run: |
+          sh -n deploy/docker-entrypoint.sh
+          bash -n deploy/server-deploy.sh
+          docker compose config --quiet
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate

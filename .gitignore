@@ -1,15 +1,10 @@
-# Xcode
-DerivedData/
-build/
-*.xcuserstate
-xcuserdata/
-*.moved-aside
-*.xccheckout
-*.xcscmblueprint
-
-# Swift Package Manager
-.build/
-.swiftpm/
-
-# macOS
+node_modules/
+.expo/
+dist/
+coverage/
+*.log
+.deployed-sha
+.env
+.env.*
+!.env.example
 .DS_Store

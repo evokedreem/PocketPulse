@@ -1,0 +1,9 @@
+[Unit]
+Description=Deploy PocketPulse from GitHub
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pocketpulse/source/deploy/server-deploy.sh

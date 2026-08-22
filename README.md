@@ -1,36 +1,46 @@
 # PocketPulse
 
-PocketPulse is a tiny native iPhone app for testing a clean SwiftUI project from end to end. Tap the main button to log a pulse and verify animation, haptic feedback, persistence, accessibility labels, and state changes.
+PocketPulse is a small Expo/React Native app built to verify this live-development path:
 
-## What it includes
+**GitHub → Hostinger VPS → Expo tunnel → Expo Go on iPhone**
 
-- Native SwiftUI interface for iPhone
-- Animated pulse counter with haptic feedback
-- Persistent count using `@AppStorage`
-- Reduce Motion and VoiceOver-friendly behavior
-- XCTest unit coverage for counter logic
-- GitHub Actions build and test workflow
-- No third-party dependencies
+The app records taps, animates the pulse display, uses iPhone vibration feedback, and includes accessibility labels. Source changes pushed to `main` are pulled by the VPS every 30 seconds. Metro sees ordinary TypeScript changes without restarting the tunnel; dependency or Expo configuration changes trigger a container rebuild.
 
-## Run it
+## Open it on iPhone
 
-1. Clone this repository on a Mac.
-2. Open `PocketPulse.xcodeproj` in Xcode 16 or later.
-3. Choose an iPhone simulator.
-4. Press **Run** (`⌘R`).
+1. Install [Expo Go from the App Store](https://apps.apple.com/app/expo-go/id982107779).
+2. Open the active `exp://` link supplied with the deployment, or scan its QR code.
+3. Keep Expo Go open while editing and pushing changes; Metro refreshes the JavaScript bundle after the VPS pulls the commit.
 
-The app targets iOS 17 and later. No developer account is required to run it in the simulator.
+## Local development
 
-## Test it
-
-In Xcode, press **Test** (`⌘U`), or run:
-
-```sh
-xcodebuild \
-  -project PocketPulse.xcodeproj \
-  -scheme PocketPulse \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
-  test
+```bash
+npm ci --ignore-scripts
+npm start
 ```
 
-`project.yml` is included as the XcodeGen source of truth if you want to regenerate the project.
+For a device outside the computer's local network:
+
+```bash
+npm run start:tunnel
+```
+
+## Verification
+
+```bash
+npm run typecheck
+npm run lint
+npm test -- --runInBand
+npm run doctor
+```
+
+## Server deployment
+
+The deployment files are intentionally committed:
+
+- `Dockerfile` runs Expo SDK 57 and Metro.
+- `docker-compose.yml` exposes Metro only on VPS loopback and sends device traffic through the outbound Expo tunnel.
+- `deploy/server-deploy.sh` safely fetches and deploys `origin/main` under a lock.
+- `deploy/pocketpulse-deploy.timer` polls GitHub every 30 seconds.
+
+The original native SwiftUI project remains available in Git history at tag [`swiftui-v1.0.0`](https://github.com/evokedreem/PocketPulse/tree/swiftui-v1.0.0).
