@@ -112,7 +112,7 @@ export default function App() {
           </Text>
         </Pressable>
 
-        <Text style={styles.footer}>EXPO GO • LIVE DEVELOPMENT TEST</Text>
+        <Text style={styles.footer}>EXPO GO • CLOUD PREVIEW VERIFIED</Text>
       </View>
     </SafeAreaView>
   );

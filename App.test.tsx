@@ -37,4 +37,10 @@ describe("PocketPulse app", () => {
     expect(screen.getByText("0")).toBeTruthy();
     expect(screen.getByText("Ready when you are")).toBeTruthy();
   });
+
+  test("shows that the cloud preview is verified", () => {
+    const screen = render(<App />);
+
+    expect(screen.getByText("EXPO GO • CLOUD PREVIEW VERIFIED")).toBeTruthy();
+  });
 });
