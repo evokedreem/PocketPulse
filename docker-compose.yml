@@ -5,9 +5,10 @@ services:
       dockerfile: Dockerfile
     container_name: pocketpulse-expo
     environment:
-      CI: "1"
       EXPO_NO_TELEMETRY: "1"
     init: true
+    stdin_open: true
+    tty: true
     ports:
       - "127.0.0.1:18081:8081"
     restart: unless-stopped

@@ -1,7 +1,6 @@
 FROM node:22-bookworm-slim
 
-ENV CI=1 \
-    EXPO_NO_TELEMETRY=1
+ENV EXPO_NO_TELEMETRY=1
 
 WORKDIR /opt/pocketpulse
 COPY package.json package-lock.json ./

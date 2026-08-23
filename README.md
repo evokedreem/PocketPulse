@@ -42,5 +42,6 @@ The deployment files are intentionally committed:
 - `docker-compose.yml` exposes Metro only on VPS loopback and sends device traffic through the outbound Expo tunnel.
 - `deploy/server-deploy.sh` safely fetches and deploys `origin/main` under a lock.
 - `deploy/pocketpulse-deploy.timer` polls GitHub every 30 seconds.
+- The server waits for the matching `Expo CI` run to pass before deploying; failed SHAs are blocked.
 
 The original native SwiftUI project remains available in Git history at tag [`swiftui-v1.0.0`](https://github.com/evokedreem/PocketPulse/tree/swiftui-v1.0.0).

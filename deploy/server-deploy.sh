@@ -20,6 +20,7 @@ expo_health() {
 git fetch --quiet origin main
 target_sha="$(git rev-parse origin/main)"
 deployed_sha="$(cat .deployed-sha 2>/dev/null || true)"
+blocked_sha="$(cat .blocked-sha 2>/dev/null || true)"
 current_health="$(expo_health)"
 
 if [[ "$target_sha" == "$deployed_sha" ]]; then
@@ -36,6 +37,54 @@ if [[ "$target_sha" == "$deployed_sha" ]]; then
   esac
   exit 0
 fi
+
+if [[ "$target_sha" == "$blocked_sha" ]]; then
+  printf 'PocketPulse deployment blocked by failed CI: %s\n' "$target_sha"
+  exit 0
+fi
+
+ci_result="$(python3 - "$target_sha" <<'PY'
+import json
+import sys
+import urllib.request
+
+sha = sys.argv[1]
+url = (
+    "https://api.github.com/repos/evokedreem/PocketPulse/actions/runs"
+    f"?head_sha={sha}&event=push&per_page=10"
+)
+request = urllib.request.Request(
+    url,
+    headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "pocketpulse-vps-deployer",
+        "X-GitHub-Api-Version": "2022-11-28",
+    },
+)
+with urllib.request.urlopen(request, timeout=15) as response:
+    runs = json.load(response).get("workflow_runs", [])
+
+run = next((item for item in runs if item.get("name") == "Expo CI"), None)
+if run is None or run.get("status") != "completed":
+    print("pending")
+else:
+    print(run.get("conclusion") or "pending")
+PY
+)"
+
+case "$ci_result" in
+  success)
+    ;;
+  pending)
+    printf 'PocketPulse waiting for CI: %s\n' "$target_sha"
+    exit 0
+    ;;
+  *)
+    printf '%s\n' "$target_sha" > .blocked-sha
+    printf 'PocketPulse deployment blocked (CI=%s): %s\n' "$ci_result" "$target_sha"
+    exit 0
+    ;;
+esac
 
 restart_required=0
 units_changed=0

@@ -4,6 +4,7 @@ dist/
 coverage/
 *.log
 .deployed-sha
+.blocked-sha
 .env
 .env.*
 !.env.example
