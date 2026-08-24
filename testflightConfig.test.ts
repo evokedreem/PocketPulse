@@ -25,6 +25,19 @@ describe("TestFlight release configuration", () => {
     expect(eas.submit.production).toEqual({});
   });
 
+  it("defines a private registered-device build with no submission profile", () => {
+    const eas = readJson("eas.json");
+
+    expect(eas.build.internal).toMatchObject({
+      distribution: "internal",
+      autoIncrement: true,
+      ios: {
+        simulator: false,
+      },
+    });
+    expect(eas.submit.internal).toBeUndefined();
+  });
+
   it("uses an opaque 1024-square App Store icon", () => {
     const icon = readFileSync(resolve(__dirname, "assets/icon.png"));
 
@@ -42,6 +55,8 @@ describe("TestFlight release configuration", () => {
     expect(readme).not.toContain("project:init --icon");
     expect(readme).toContain("Apple Developer Program");
     expect(readme).toContain('git commit -m "chore: link Expo EAS project"');
+    expect(readme).toContain("eas-cli@22.2.0 device:create");
+    expect(readme).toContain("--profile internal");
   });
 
   it("uses a stable iOS identity and declares exempt encryption", () => {

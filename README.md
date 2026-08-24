@@ -34,6 +34,27 @@ npm test -- --runInBand
 npm run doctor
 ```
 
+## Private iPhone install
+
+The `internal` EAS profile creates an ad-hoc build for registered iPhones. It requires an active Apple Developer Program membership for signing, but it does not publish PocketPulse to the App Store or submit it for App Review.
+
+Register the iPhone once:
+
+```bash
+npx --yes eas-cli@22.2.0 device:create
+```
+
+After registration, create the private build:
+
+```bash
+npx --yes eas-cli@22.2.0 build \
+  --platform ios \
+  --profile internal \
+  --no-wait
+```
+
+Open the resulting private EAS installation link on the registered iPhone. Rebuild when the Apple provisioning profile expires or when adding another device.
+
 ## TestFlight release
 
 PocketPulse uses the `production` profile in `eas.json` for a signed App Store build. It automatically increments the iOS build number and uses Expo-managed remote signing credentials. Never commit Apple or Expo credentials.
