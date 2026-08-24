@@ -2,6 +2,7 @@
   "name": "pocket-pulse",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "npm@10.9.8",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
