@@ -2,25 +2,118 @@ name: iOS CI
 
 on:
   push:
-    branches: [main]
+    branches: [native-swiftui]
   pull_request:
-    branches: [main]
+    branches: [native-swiftui]
+
+permissions:
+  contents: read
 
 jobs:
   build-and-test:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - name: Build for iPhone Simulator
+      - name: Verify branch is native-only
+        shell: bash
+        run: |
+          TRACKED_FILES="$RUNNER_TEMP/pocketpulse-tracked-files.bin"
+          git ls-files --stage -z > "$TRACKED_FILES"
+          python3 -c '
+          import os
+          import re
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          records = [item for item in open(sys.argv[1], "rb").read().split(b"\0") if item]
+          app_suffixes = {
+              ".swift", ".h", ".m", ".mm", ".c", ".cc", ".cpp",
+              ".plist", ".entitlements", ".xcconfig", ".strings", ".stringsdict",
+              ".storyboard", ".xib", ".metal", ".json", ".png", ".jpg",
+              ".jpeg", ".pdf", ".svg", ".heic", ".webp",
+          }
+          project_suffixes = {".pbxproj", ".xcscheme", ".plist", ".xcsettings", ".xcworkspacedata"}
+          text_suffixes = {
+              ".swift", ".h", ".m", ".mm", ".c", ".cc", ".cpp", ".plist",
+              ".entitlements", ".xcconfig", ".strings", ".stringsdict", ".storyboard",
+              ".xib", ".metal", ".json", ".pbxproj", ".xcscheme", ".xcsettings",
+              ".xcworkspacedata",
+          }
+          forbidden_reference = re.compile(
+              r"(?<![A-Za-z0-9_])(?:Expo[A-Za-z0-9_]*|React[A-Za-z0-9_]*|RCT(?:_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*))(?![A-Za-z0-9_])"
+              r"|XCRemoteSwiftPackageReference|XCLocalSwiftPackageReference|XCSwiftPackageProductDependency"
+          )
+          allowed = []
+          rejected = []
+          reference_matches = []
+          for record in records:
+              metadata, raw_path = record.split(b"\t", 1)
+              mode, _object_id, stage = metadata.split()
+              path = os.fsdecode(raw_path)
+              item = PurePosixPath(path)
+              root = item.parts[0] if item.parts else ""
+              suffix = item.suffix.lower()
+              regular_file = mode in {b"100644", b"100755"} and stage == b"0"
+              allowed_path = (
+                  path in {".gitignore", "README.md"}
+                  or (path.startswith(".github/workflows/") and suffix in {".yml", ".yaml"})
+                  or (root in {"PocketPulse", "PocketPulseTests"} and suffix in app_suffixes)
+                  or (root == "PocketPulse.xcodeproj" and suffix in project_suffixes)
+                  or (root == "docs" and suffix in {".md", ".png", ".jpg", ".jpeg", ".pdf"})
+                  or (root == "scripts" and suffix in {".py", ".sh"})
+              )
+              if not regular_file or not allowed_path:
+                  rejected.append(f"{mode.decode()} stage={stage.decode()} {path}")
+                  continue
+              allowed.append(path)
+              if root in {"PocketPulse", "PocketPulseTests", "PocketPulse.xcodeproj"} and suffix in text_suffixes:
+                  text = Path(path).read_text(encoding="utf-8")
+                  match = forbidden_reference.search(text)
+                  if match:
+                      line = text.count("\n", 0, match.start()) + 1
+                      reference_matches.append(f"{path}:{line}: {match.group(0)}")
+          if rejected:
+              print("Unexpected tracked path or non-regular Git object:", *rejected, sep="\n", file=sys.stderr)
+              sys.exit(1)
+          if reference_matches:
+              print("Expo, React, RCT, or package reference found:", *reference_matches, sep="\n", file=sys.stderr)
+              sys.exit(1)
+          print(f"Validated {len(allowed)} regular tracked native files")
+          ' "$TRACKED_FILES"
+
+      - name: Verify effective Xcode settings
+        shell: bash
+        run: |
+          for CONFIGURATION in Debug Release; do
+            if [ "$CONFIGURATION" = "Debug" ]; then
+              SDK=iphonesimulator
+            else
+              SDK=iphoneos
+            fi
+            xcodebuild \
+              -project PocketPulse.xcodeproj \
+              -target PocketPulse \
+              -configuration "$CONFIGURATION" \
+              -sdk "$SDK" \
+              -showBuildSettings \
+              -json > "build-settings-$CONFIGURATION.json"
+            CONFIGURATION="$CONFIGURATION" python3 -c 'import json, os, sys; path="build-settings-"+os.environ["CONFIGURATION"]+".json"; entries=json.load(open(path)); len(entries)==1 or sys.exit(f"Expected one target in {path}, got {len(entries)}"); settings=entries[0]["buildSettings"]; expected={"PRODUCT_BUNDLE_IDENTIFIER":"com.evokedreem.pocketpulse","CODE_SIGN_STYLE":"Automatic","IPHONEOS_DEPLOYMENT_TARGET":"17.0","TARGETED_DEVICE_FAMILY":"1"}; wrong={key:(settings.get(key), value) for key,value in expected.items() if settings.get(key)!=value}; not wrong or sys.exit("Wrong effective settings for "+os.environ["CONFIGURATION"]+": "+repr(wrong))'
+          done
+
+      - name: Build unsigned Release for iPhone device SDK
         run: |
           xcodebuild \
             -project PocketPulse.xcodeproj \
             -scheme PocketPulse \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             build
 
       - name: Select an available iPhone Simulator
@@ -30,11 +123,12 @@ jobs:
           test -n "$DEVICE_ID"
           echo "id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Run unit tests
+      - name: Run Debug unit tests
         run: |
           xcodebuild \
             -project PocketPulse.xcodeproj \
             -scheme PocketPulse \
+            -configuration Debug \
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
             CODE_SIGNING_ALLOWED=NO \
             test
