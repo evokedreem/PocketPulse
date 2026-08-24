@@ -50,6 +50,9 @@ describe("TestFlight release configuration", () => {
     expect(app.name).toBe("PocketPulse");
     expect(app.version).toBe("1.0.0");
     expect(app.icon).toBe("./assets/icon.png");
+    expect(app.extra?.eas?.projectId).toBe(
+      "cf088113-045c-436d-bb33-2996c048eea1",
+    );
     expect(app.ios).toMatchObject({
       bundleIdentifier: "com.evokedreem.pocketpulse",
       supportsTablet: false,
