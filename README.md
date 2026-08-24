@@ -34,6 +34,38 @@ npm test -- --runInBand
 npm run doctor
 ```
 
+## TestFlight release
+
+PocketPulse uses the `production` profile in `eas.json` for a signed App Store build. It automatically increments the iOS build number and uses Expo-managed remote signing credentials. Never commit Apple or Expo credentials.
+
+Prerequisites:
+
+- An Expo account.
+- An active Apple Developer Program membership with App Store Connect access.
+- Accepted App Store Connect agreements and an app record for `com.evokedreem.pocketpulse`.
+
+One-time account setup:
+
+```bash
+npx --yes eas-cli@22.2.0 login --browser
+npx --yes eas-cli@22.2.0 project:init
+git add app.json
+git commit -m "chore: link Expo EAS project"
+git push
+```
+
+Create the standalone iOS build and upload it to TestFlight:
+
+```bash
+npx --yes eas-cli@22.2.0 build \
+  --platform ios \
+  --profile production \
+  --auto-submit \
+  --what-to-test "Verify pulse logging, reset, vibration, and accessibility labels."
+```
+
+The first build prompts an authorized Apple Developer team member to create or select the distribution certificate, provisioning profile, and App Store Connect credentials. After processing, install PocketPulse from TestFlight; Expo Go and the VPS tunnel are not involved in the standalone app.
+
 ## Server deployment
 
 The deployment files are intentionally committed:
