@@ -48,4 +48,4 @@ jobs:
           docker compose config --quiet
 
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
+        run: npm run audit:production

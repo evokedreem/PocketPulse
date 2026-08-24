@@ -38,10 +38,13 @@ npm run doctor
 
 The deployment files are intentionally committed:
 
-- `Dockerfile` runs Expo SDK 57 and Metro.
+- `Dockerfile` runs Expo SDK 54 and Metro for App Store Expo Go compatibility.
 - `docker-compose.yml` exposes Metro only on VPS loopback and sends device traffic through the outbound Expo tunnel.
 - `deploy/server-deploy.sh` safely fetches and deploys `origin/main` under a lock.
 - `deploy/pocketpulse-deploy.timer` polls GitHub every 30 seconds.
+
+The production audit gate rejects all findings except the two currently unfixed `image-size` advisories inherited from Expo SDK 54's Metro dependency. Those exact advisory URLs and dependency paths are allowlisted in `scripts/check-production-audit.cjs`; any new advisory still fails CI.
+
 - The server waits for the matching `Expo CI` run to pass before deploying; failed SHAs are blocked.
 
 The original native SwiftUI project remains available in Git history at tag [`swiftui-v1.0.0`](https://github.com/evokedreem/PocketPulse/tree/swiftui-v1.0.0).
