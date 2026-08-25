@@ -161,6 +161,43 @@ final class HealthDashboardModelTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    func testCancelledRefreshPreservesPreviouslyReadyEmptyState() async {
+        let provider = NonCooperativeSummaryProvider(
+            immediateSummaries: [.empty(at: now)]
+        )
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+        await model.refresh()
+        XCTAssertEqual(model.state, .ready)
+
+        let refreshTask = Task { await model.refresh() }
+        await provider.waitUntilStarted()
+        refreshTask.cancel()
+        await provider.resolve(with: .empty(at: now))
+        await refreshTask.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertFalse(model.isRefreshing)
+    }
+
+    func testStaleAuthorizationCancellationDoesNotOverwriteNewerRefresh() async {
+        let expected = summary(steps: 7_777)
+        let provider = NonCooperativeAuthorizationProvider(summary: expected)
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+
+        let authorizationTask = Task { await model.requestAuthorization() }
+        await provider.waitUntilAuthorizationStarted()
+        await model.refresh()
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.summary, expected)
+
+        authorizationTask.cancel()
+        await provider.cancelAuthorization()
+        await authorizationTask.value
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.summary, expected)
+    }
+
     func testHistoryFailureRemainsRequestLocal() async {
         let provider = FakeHealthDataProvider(historyResult: .failure(TestHealthError.query))
         let model = HealthDashboardModel(provider: provider, now: { self.now })
@@ -192,16 +229,68 @@ private enum TestHealthError: Error {
     case query
 }
 
+private actor NonCooperativeAuthorizationProvider: HealthDataProviding {
+    nonisolated let isHealthDataAvailable = true
+
+    private let summary: HealthSummary
+    private var authorizationContinuation: CheckedContinuation<Void, Error>?
+    private var authorizationStarted = false
+
+    init(summary: HealthSummary) {
+        self.summary = summary
+    }
+
+    func requestAuthorization() async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            authorizationContinuation = continuation
+            authorizationStarted = true
+        }
+    }
+
+    func waitUntilAuthorizationStarted() async {
+        while !authorizationStarted {
+            await Task.yield()
+        }
+    }
+
+    func cancelAuthorization() {
+        authorizationContinuation?.resume(throwing: CancellationError())
+        authorizationContinuation = nil
+    }
+
+    func fetchSummary(for metrics: [HealthMetric], now: Date) async throws -> HealthSummary {
+        summary
+    }
+
+    func fetchHistory(
+        for metric: HealthMetric,
+        range: HealthRange,
+        now: Date
+    ) async throws -> MetricHistory {
+        MetricHistory(metric: metric, range: range, points: [], latest: nil)
+    }
+
+    func save(_ entry: ManualHealthEntry) async throws {}
+}
+
 private actor NonCooperativeSummaryProvider: HealthDataProviding {
     nonisolated let isHealthDataAvailable = true
 
     private var continuation: CheckedContinuation<HealthSummary, Never>?
+    private var immediateSummaries: [HealthSummary]
     private var started = false
+
+    init(immediateSummaries: [HealthSummary] = []) {
+        self.immediateSummaries = immediateSummaries
+    }
 
     func requestAuthorization() async throws {}
 
     func fetchSummary(for metrics: [HealthMetric], now: Date) async throws -> HealthSummary {
-        await withCheckedContinuation { continuation in
+        if !immediateSummaries.isEmpty {
+            return immediateSummaries.removeFirst()
+        }
+        return await withCheckedContinuation { continuation in
             self.continuation = continuation
             started = true
         }
