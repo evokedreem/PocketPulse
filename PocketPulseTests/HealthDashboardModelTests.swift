@@ -144,6 +144,38 @@ final class HealthDashboardModelTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    func testCancelledNonCooperativeRefreshDoesNotPublishOrRemainLoading() async {
+        let provider = NonCooperativeSummaryProvider()
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+        let lateSummary = summary(steps: 9_999)
+
+        let refreshTask = Task { await model.refresh() }
+        await provider.waitUntilStarted()
+        refreshTask.cancel()
+        await provider.resolve(with: lateSummary)
+        await refreshTask.value
+
+        XCTAssertEqual(model.state, .notRequested)
+        XCTAssertTrue(model.summary.values.isEmpty)
+        XCTAssertFalse(model.isRefreshing)
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testHistoryFailureRemainsRequestLocal() async {
+        let provider = FakeHealthDataProvider(historyResult: .failure(TestHealthError.query))
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+
+        do {
+            _ = try await model.history(for: .steps, range: .week)
+            XCTFail("Expected query failure")
+        } catch {
+            // The detail screen owns request-specific error presentation.
+        }
+
+        XCTAssertEqual(model.state, .notRequested)
+        XCTAssertNil(model.errorMessage)
+    }
+
     private func summary(steps: Double) -> HealthSummary {
         let value = HealthMetricValue(
             metric: .steps,
@@ -158,6 +190,43 @@ final class HealthDashboardModelTests: XCTestCase {
 private enum TestHealthError: Error {
     case authorization
     case query
+}
+
+private actor NonCooperativeSummaryProvider: HealthDataProviding {
+    nonisolated let isHealthDataAvailable = true
+
+    private var continuation: CheckedContinuation<HealthSummary, Never>?
+    private var started = false
+
+    func requestAuthorization() async throws {}
+
+    func fetchSummary(for metrics: [HealthMetric], now: Date) async throws -> HealthSummary {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            started = true
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !started {
+            await Task.yield()
+        }
+    }
+
+    func resolve(with summary: HealthSummary) {
+        continuation?.resume(returning: summary)
+        continuation = nil
+    }
+
+    func fetchHistory(
+        for metric: HealthMetric,
+        range: HealthRange,
+        now: Date
+    ) async throws -> MetricHistory {
+        MetricHistory(metric: metric, range: range, points: [], latest: nil)
+    }
+
+    func save(_ entry: ManualHealthEntry) async throws {}
 }
 
 private final class FakeHealthDataProvider: HealthDataProviding, @unchecked Sendable {

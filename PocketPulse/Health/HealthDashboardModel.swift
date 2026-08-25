@@ -38,6 +38,9 @@ final class HealthDashboardModel: ObservableObject {
         do {
             try await provider.requestAuthorization()
             hasCompletedAccessFlow = true
+        } catch is CancellationError {
+            state = hasCompletedAccessFlow ? .ready : .notRequested
+            return
         } catch {
             fail(with: error)
             return
@@ -54,6 +57,8 @@ final class HealthDashboardModel: ObservableObject {
 
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        let fallbackState: HealthConnectionState =
+            hasCompletedAccessFlow || !summary.values.isEmpty ? .ready : .notRequested
         isRefreshing = true
         errorMessage = nil
         if summary.values.isEmpty {
@@ -67,6 +72,7 @@ final class HealthDashboardModel: ObservableObject {
 
         do {
             let fetched = try await provider.fetchSummary(for: metrics, now: now())
+            try Task.checkCancellation()
             guard generation == refreshGeneration else { return }
 
             if Set(metrics) == Set(HealthMetric.allCases) {
@@ -76,12 +82,13 @@ final class HealthDashboardModel: ObservableObject {
                 for metric in metrics {
                     merged.removeValue(forKey: metric)
                 }
-                merged.merge(fetched.values) { _, new in new }
+                merged.merge(fetched.values) { _, refreshed in refreshed }
                 summary = HealthSummary(generatedAt: fetched.generatedAt, values: merged)
             }
             state = .ready
         } catch is CancellationError {
-            return
+            guard generation == refreshGeneration else { return }
+            state = fallbackState
         } catch {
             guard generation == refreshGeneration else { return }
             fail(with: error)
@@ -92,16 +99,7 @@ final class HealthDashboardModel: ObservableObject {
         for metric: HealthMetric,
         range: HealthRange
     ) async throws -> MetricHistory {
-        do {
-            let history = try await provider.fetchHistory(for: metric, range: range, now: now())
-            errorMessage = nil
-            return history
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            fail(with: error)
-            throw error
-        }
+        try await provider.fetchHistory(for: metric, range: range, now: now())
     }
 
     func save(_ entry: ManualHealthEntry) async throws {
