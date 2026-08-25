@@ -58,7 +58,7 @@ final class HealthDashboardModel: ObservableObject {
         await refresh()
     }
 
-    func resumeAfterPriorAccessRequest() async {
+    func resumeAfterPriorAccessRequest() {
         guard provider.isHealthDataAvailable else {
             stableState = .unavailable
             state = .unavailable
@@ -68,7 +68,6 @@ final class HealthDashboardModel: ObservableObject {
         isRefreshing = false
         stableState = .ready
         state = .ready
-        await refresh()
     }
 
     func refresh(metrics: [HealthMetric] = HealthMetric.allCases) async {
@@ -99,7 +98,7 @@ final class HealthDashboardModel: ObservableObject {
             let requested = Set(metrics)
             var mergedValues = summary.values.filter { !requested.contains($0.key) }
             mergedValues.merge(fetched.values) { _, refreshed in refreshed }
-            summary = HealthSummary(values: mergedValues, generatedAt: fetched.generatedAt)
+            summary = HealthSummary(generatedAt: fetched.generatedAt, values: mergedValues)
             stableState = .ready
             state = .ready
         } catch is CancellationError {
