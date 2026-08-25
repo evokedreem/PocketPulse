@@ -198,6 +198,42 @@ final class HealthDashboardModelTests: XCTestCase {
         XCTAssertEqual(model.summary, expected)
     }
 
+    func testUnavailableRefreshInvalidatesInFlightRefresh() async {
+        let provider = AvailabilityChangingSummaryProvider()
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+        let lateSummary = summary(steps: 8_888)
+
+        let firstRefresh = Task { await model.refresh() }
+        await provider.waitUntilStarted()
+        provider.setAvailable(false)
+        await model.refresh()
+        await provider.resolve(with: lateSummary)
+        await firstRefresh.value
+
+        XCTAssertEqual(model.state, .unavailable)
+        XCTAssertTrue(model.summary.values.isEmpty)
+        XCTAssertFalse(model.isRefreshing)
+    }
+
+    func testCancelledSaveDoesNotCreateGlobalFailureState() async {
+        let provider = FakeHealthDataProvider(saveResult: .failure(CancellationError()))
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+        model.resumeAfterPriorAccessRequest()
+
+        do {
+            try await model.save(ManualHealthEntry(metric: .weight, value: 180, date: now))
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(provider.saveCallCount, 1)
+    }
+
     func testHistoryFailureRemainsRequestLocal() async {
         let provider = FakeHealthDataProvider(historyResult: .failure(TestHealthError.query))
         let model = HealthDashboardModel(provider: provider, now: { self.now })
@@ -227,6 +263,63 @@ final class HealthDashboardModelTests: XCTestCase {
 private enum TestHealthError: Error {
     case authorization
     case query
+}
+
+private final class AvailabilityChangingSummaryProvider: HealthDataProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var available = true
+    private var started = false
+    private var continuation: CheckedContinuation<HealthSummary, Never>?
+
+    var isHealthDataAvailable: Bool {
+        locked { available }
+    }
+
+    func setAvailable(_ value: Bool) {
+        locked { available = value }
+    }
+
+    func requestAuthorization() async throws {}
+
+    func fetchSummary(for metrics: [HealthMetric], now: Date) async throws -> HealthSummary {
+        await withCheckedContinuation { continuation in
+            locked {
+                self.continuation = continuation
+                started = true
+            }
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !locked({ started }) {
+            await Task.yield()
+        }
+    }
+
+    func resolve(with summary: HealthSummary) async {
+        let pending = locked {
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        pending?.resume(returning: summary)
+    }
+
+    func fetchHistory(
+        for metric: HealthMetric,
+        range: HealthRange,
+        now: Date
+    ) async throws -> MetricHistory {
+        MetricHistory(metric: metric, range: range, points: [], latest: nil)
+    }
+
+    func save(_ entry: ManualHealthEntry) async throws {}
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 }
 
 private actor NonCooperativeAuthorizationProvider: HealthDataProviding {
