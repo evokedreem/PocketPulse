@@ -220,6 +220,10 @@ jobs:
           actual_hash = hashlib.sha256(devices[0].encode("utf-8")).hexdigest()
           require(hmac.compare_digest(actual_hash, os.environ["EXPECTED_DEVICE_HASH"]), "profile authorizes the wrong device")
           require(entitlements.get("get-task-allow") is False, "development profile is not allowed")
+          require(
+              entitlements.get("com.apple.developer.healthkit") is True,
+              "profile does not authorize HealthKit",
+          )
           require(profile.get("ProvisionsAllDevices") is not True, "enterprise profile is not allowed")
           require(bool(profile.get("DeveloperCertificates")), "profile contains no signing certificate")
           print(uuid.upper())
@@ -362,6 +366,8 @@ jobs:
           test "$(plutil -extract CFBundleIdentifier raw "$APP_PATH/Info.plist")" = "$APP_BUNDLE_ID"
           test "$(plutil -extract CFBundleShortVersionString raw "$APP_PATH/Info.plist")" = "1.0"
           test "$(plutil -extract CFBundleVersion raw "$APP_PATH/Info.plist")" = "${{ github.run_number }}"
+          test "$(plutil -extract NSHealthShareUsageDescription raw "$APP_PATH/Info.plist")" = "PocketPulse reads health data you choose to show your personal dashboard, history, and trends."
+          test "$(plutil -extract NSHealthUpdateUsageDescription raw "$APP_PATH/Info.plist")" = "PocketPulse saves only the health entries you enter to Apple Health."
           EXECUTABLE_NAME=$(plutil -extract CFBundleExecutable raw "$APP_PATH/Info.plist")
           EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE_NAME"
           test -f "$EXECUTABLE_PATH"
@@ -409,6 +415,10 @@ jobs:
           actual_hash = hashlib.sha256(devices[0].encode("utf-8")).hexdigest()
           require(hmac.compare_digest(actual_hash, os.environ["EXPECTED_DEVICE_HASH"]), "embedded profile authorizes wrong device")
           require(entitlements.get("get-task-allow") is False, "embedded profile permits debugging")
+          require(
+              entitlements.get("com.apple.developer.healthkit") is True,
+              "embedded profile does not authorize HealthKit",
+          )
           require(profile.get("ProvisionsAllDevices") is not True, "embedded profile is enterprise-wide")
           leaf_fingerprint = hashlib.sha256(leaf_certificate).digest()
           require(
@@ -459,6 +469,10 @@ jobs:
               "signed team entitlement mismatch",
           )
           require(entitlements.get("get-task-allow") in (None, False), "signed app permits debugging")
+          require(
+              entitlements.get("com.apple.developer.healthkit") is True,
+              "signed app is missing HealthKit entitlement",
+          )
           groups = entitlements.get("keychain-access-groups", [])
           require(all(group == expected_app_id for group in groups), "unexpected signed keychain access group")
           PY
