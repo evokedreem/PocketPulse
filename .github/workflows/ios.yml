@@ -173,6 +173,7 @@ jobs:
             test
 
       - name: Launch native app and capture Summary screen
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -192,15 +193,7 @@ jobs:
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
           LAUNCH_OUTPUT=$(xcrun simctl launch --terminate-running-process "$DEVICE_ID" com.evokedreem.pocketpulse)
           printf '%s\n' "$LAUNCH_OUTPUT"
-          APP_RUNNING=false
-          for attempt in $(seq 1 20); do
-            if xcrun simctl spawn "$DEVICE_ID" ps -A -o comm= | grep -Fq '/PocketPulse'; then
-              APP_RUNNING=true
-              break
-            fi
-            sleep 1
-          done
-          test "$APP_RUNNING" = true
+          printf '%s\n' "$LAUNCH_OUTPUT" | grep -Eq '^com\.evokedreem\.pocketpulse: [0-9]+$'
           xcrun simctl io "$DEVICE_ID" screenshot "$SCREENSHOT_PATH"
           test -s "$SCREENSHOT_PATH"
           file "$SCREENSHOT_PATH" | grep -Fq 'PNG image data'
