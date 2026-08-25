@@ -28,14 +28,16 @@ final class HealthDashboardModel: ObservableObject {
     }
 
     func requestAuthorization() async {
+        operationGeneration &+= 1
+        let generation = operationGeneration
+
         guard provider.isHealthDataAvailable else {
+            isRefreshing = false
             stableState = .unavailable
             state = .unavailable
             return
         }
 
-        operationGeneration &+= 1
-        let generation = operationGeneration
         isRefreshing = false
         state = .requesting
         errorMessage = nil
@@ -59,26 +61,31 @@ final class HealthDashboardModel: ObservableObject {
     }
 
     func resumeAfterPriorAccessRequest() {
+        operationGeneration &+= 1
+
         guard provider.isHealthDataAvailable else {
+            isRefreshing = false
             stableState = .unavailable
             state = .unavailable
             return
         }
-        operationGeneration &+= 1
+
         isRefreshing = false
         stableState = .ready
         state = .ready
     }
 
     func refresh(metrics: [HealthMetric] = HealthMetric.allCases) async {
+        operationGeneration &+= 1
+        let generation = operationGeneration
+
         guard provider.isHealthDataAvailable else {
+            isRefreshing = false
             stableState = .unavailable
             state = .unavailable
             return
         }
 
-        operationGeneration &+= 1
-        let generation = operationGeneration
         let fallbackState = stableState
         isRefreshing = true
         errorMessage = nil
@@ -121,6 +128,8 @@ final class HealthDashboardModel: ObservableObject {
         do {
             try await provider.save(entry)
             await refresh(metrics: [entry.metric])
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             fail(with: error)
             throw error
