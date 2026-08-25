@@ -226,26 +226,10 @@ private struct FavoritesEditorView: View {
                 }
 
                 ForEach(HealthCategory.allCases) { category in
-                    Section(category.title) {
-                        ForEach(HealthMetric.allCases.filter { $0.category == category }) { metric in
-                            Button {
-                                if selection.contains(metric) {
-                                    selection.remove(metric)
-                                } else {
-                                    selection.insert(metric)
-                                }
-                            } label: {
-                                HStack(spacing: 12) {
-                                    MetricIcon(metric: metric, size: 36)
-                                    Text(metric.title)
-                                        .foregroundStyle(HealthPalette.ink)
-                                    Spacer()
-                                    Image(systemName: selection.contains(metric) ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(selection.contains(metric) ? metric.tint : .tertiary)
-                                }
-                            }
-                        }
-                    }
+                    FavoriteCategorySection(
+                        category: category,
+                        selection: $selection
+                    )
                 }
             }
             .navigationTitle("Edit Favorites")
@@ -262,6 +246,54 @@ private struct FavoritesEditorView: View {
                     }
                     .fontWeight(.semibold)
                 }
+            }
+        }
+    }
+}
+
+private struct FavoriteCategorySection: View {
+    let category: HealthCategory
+    @Binding var selection: Set<HealthMetric>
+
+    var body: some View {
+        Section(category.title) {
+            ForEach(metrics) { metric in
+                FavoriteMetricToggleRow(
+                    metric: metric,
+                    isSelected: selection.contains(metric),
+                    toggle: { toggle(metric) }
+                )
+            }
+        }
+    }
+
+    private var metrics: [HealthMetric] {
+        HealthMetric.allCases.filter { $0.category == category }
+    }
+
+    private func toggle(_ metric: HealthMetric) {
+        if selection.contains(metric) {
+            selection.remove(metric)
+        } else {
+            selection.insert(metric)
+        }
+    }
+}
+
+private struct FavoriteMetricToggleRow: View {
+    let metric: HealthMetric
+    let isSelected: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 12) {
+                MetricIcon(metric: metric, size: 36)
+                Text(metric.title)
+                    .foregroundStyle(HealthPalette.ink)
+                Spacer()
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? metric.tint : Color.secondary)
             }
         }
     }
