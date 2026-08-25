@@ -357,7 +357,7 @@ jobs:
           test -f "$APP_PATH/embedded.mobileprovision"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           codesign -dvv "$APP_PATH" 2> "$RUNNER_TEMP/signer-details.txt"
-          grep -q '^Authority=Apple Distribution:' "$RUNNER_TEMP/signer-details.txt"
+          grep -Eq '^Authority=(Apple Distribution|iPhone Distribution):' "$RUNNER_TEMP/signer-details.txt"
           grep -Fxq "TeamIdentifier=$APPLE_TEAM_ID" "$RUNNER_TEMP/signer-details.txt"
           test "$(plutil -extract CFBundleIdentifier raw "$APP_PATH/Info.plist")" = "$APP_BUNDLE_ID"
           test "$(plutil -extract CFBundleShortVersionString raw "$APP_PATH/Info.plist")" = "1.0"
