@@ -1,119 +1,106 @@
 import SwiftUI
-import UIKit
 
 struct ContentView: View {
-    @AppStorage("pulseCount") private var storedCount = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var pulseScale = 1.0
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("healthAccessRequested") private var healthAccessRequested = false
+    @StateObject private var model: HealthDashboardModel
 
-    private var counter: PulseCounter {
-        PulseCounter(count: storedCount)
+    init(provider: any HealthDataProviding = HealthKitStore()) {
+        _model = StateObject(wrappedValue: HealthDashboardModel(provider: provider))
     }
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.06, blue: 0.18),
-                    Color(red: 0.22, green: 0.08, blue: 0.32)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            VStack(spacing: 28) {
-                VStack(spacing: 8) {
-                    Text("POCKETPULSE")
-                        .font(.caption.weight(.bold))
-                        .tracking(3)
-                        .foregroundStyle(.white.opacity(0.7))
-
-                    Text("Tap Check")
-                        .font(.largeTitle.bold())
-                        .foregroundStyle(.white)
-                }
-
-                ZStack {
-                    Circle()
-                        .fill(.white.opacity(0.08))
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [.pink, .purple, .cyan],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 8
-                        )
-                    VStack(spacing: 4) {
-                        Text("\(storedCount)")
-                            .font(.system(size: 72, weight: .bold, design: .rounded))
-                            .contentTransition(.numericText())
-                        Text(storedCount == 1 ? "pulse" : "pulses")
-                            .font(.headline)
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
-                    .foregroundStyle(.white)
-                }
-                .frame(width: 230, height: 230)
-                .scaleEffect(pulseScale)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Pulse count")
-                .accessibilityValue("\(storedCount)")
-
-                Text(counter.message)
-                    .font(.headline)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .animation(.easeInOut, value: counter.message)
-
-                Button(action: recordPulse) {
-                    Label("Log a pulse", systemImage: "heart.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 17)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color(red: 0.13, green: 0.06, blue: 0.22))
-                .background(.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .accessibilityHint("Increases the pulse count by one")
-
-                Button("Reset", role: .destructive, action: reset)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(storedCount == 0 ? .white.opacity(0.3) : .white.opacity(0.75))
-                    .disabled(storedCount == 0)
-                    .accessibilityHint("Returns the pulse count to zero")
+        TabView {
+            NavigationStack {
+                HealthSummaryView(
+                    model: model,
+                    healthAccessRequested: $healthAccessRequested
+                )
             }
-            .padding(28)
-        }
-        .preferredColorScheme(.dark)
-    }
+            .tabItem {
+                Label("Summary", systemImage: "heart.text.square.fill")
+            }
 
-    private func recordPulse() {
-        var updatedCounter = counter
-        updatedCounter.recordPulse()
-        storedCount = updatedCounter.count
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            NavigationStack {
+                HealthBrowseView(model: model)
+            }
+            .tabItem {
+                Label("Browse", systemImage: "square.grid.2x2.fill")
+            }
 
-        guard !reduceMotion else { return }
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.55)) {
-            pulseScale = 1.1
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) {
-                pulseScale = 1.0
+            NavigationStack {
+                HealthPrivacyView(
+                    model: model,
+                    healthAccessRequested: $healthAccessRequested
+                )
+            }
+            .tabItem {
+                Label("Privacy", systemImage: "lock.shield.fill")
             }
         }
-    }
-
-    private func reset() {
-        var updatedCounter = counter
-        updatedCounter.reset()
-        storedCount = updatedCounter.count
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        .tint(HealthPalette.accent)
+        .task {
+            if healthAccessRequested, model.state == .notRequested {
+                await model.refresh()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active,
+                  healthAccessRequested,
+                  model.state != .requesting,
+                  model.state != .loading else { return }
+            Task { await model.refresh() }
+        }
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(provider: PreviewHealthDataProvider())
+}
+
+private struct PreviewHealthDataProvider: HealthDataProviding {
+    let isHealthDataAvailable = true
+
+    func requestAuthorization() async throws {}
+
+    func fetchSummary(for metrics: [HealthMetric], now: Date) async throws -> HealthSummary {
+        let seeded: [HealthMetric: Double] = [
+            .steps: 8_432,
+            .heartRate: 72,
+            .sleep: 7.5,
+            .activeEnergy: 486,
+            .oxygenSaturation: 0.98,
+            .bodyMass: 184.2
+        ]
+        return HealthSummary(
+            generatedAt: now,
+            values: Dictionary(uniqueKeysWithValues: seeded.compactMap { metric, value in
+                guard metrics.contains(metric) else { return nil }
+                return (
+                    metric,
+                    HealthMetricValue(
+                        metric: metric,
+                        value: value,
+                        date: now,
+                        sourceName: "Garrette’s iPhone"
+                    )
+                )
+            })
+        )
+    }
+
+    func fetchHistory(
+        for metric: HealthMetric,
+        range: HealthRange,
+        now: Date
+    ) async throws -> MetricHistory {
+        let calendar = Calendar.current
+        let points = (0..<range.rawValue).compactMap { offset -> MetricDataPoint? in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { return nil }
+            return MetricDataPoint(date: date, value: Double(6_500 + ((offset * 733) % 4_000)))
+        }.reversed()
+        return MetricHistory(metric: metric, range: range, points: Array(points), latest: nil)
+    }
+
+    func save(_ entry: ManualHealthEntry) async throws {}
 }
