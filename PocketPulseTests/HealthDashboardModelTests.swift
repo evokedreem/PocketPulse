@@ -216,12 +216,12 @@ final class HealthDashboardModelTests: XCTestCase {
     }
 
     func testCancelledSaveDoesNotCreateGlobalFailureState() async {
-        let provider = FakeHealthDataProvider(saveResult: .failure(CancellationError()))
+        let provider = FakeHealthDataProvider(saveError: CancellationError())
         let model = HealthDashboardModel(provider: provider, now: { self.now })
         model.resumeAfterPriorAccessRequest()
 
         do {
-            try await model.save(ManualHealthEntry(metric: .weight, value: 180, date: now))
+            try await model.save(ManualHealthEntry(metric: .bodyMass, value: 180, date: now))
             XCTFail("Expected cancellation")
         } catch is CancellationError {
             // Expected.
@@ -231,7 +231,7 @@ final class HealthDashboardModelTests: XCTestCase {
 
         XCTAssertEqual(model.state, .ready)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(provider.saveCallCount, 1)
+        XCTAssertEqual(provider.savedEntries.count, 1)
     }
 
     func testHistoryFailureRemainsRequestLocal() async {
@@ -419,6 +419,7 @@ private final class FakeHealthDataProvider: HealthDataProviding, @unchecked Send
 
     let isHealthDataAvailable: Bool
     var authorizationError: Error?
+    var saveError: Error?
     var summaryResult: Result<HealthSummary, Error>
     var historyResult: Result<MetricHistory, Error>
     private(set) var authorizationRequestCount = 0
@@ -429,6 +430,7 @@ private final class FakeHealthDataProvider: HealthDataProviding, @unchecked Send
     init(
         isHealthDataAvailable: Bool = true,
         authorizationError: Error? = nil,
+        saveError: Error? = nil,
         summaryResult: Result<HealthSummary, Error> = .success(.empty()),
         historyResult: Result<MetricHistory, Error> = .success(
             MetricHistory(metric: .steps, range: .week, points: [], latest: nil)
@@ -436,6 +438,7 @@ private final class FakeHealthDataProvider: HealthDataProviding, @unchecked Send
     ) {
         self.isHealthDataAvailable = isHealthDataAvailable
         self.authorizationError = authorizationError
+        self.saveError = saveError
         self.summaryResult = summaryResult
         self.historyResult = historyResult
     }
@@ -461,5 +464,6 @@ private final class FakeHealthDataProvider: HealthDataProviding, @unchecked Send
 
     func save(_ entry: ManualHealthEntry) async throws {
         savedEntries.append(entry)
+        if let saveError { throw saveError }
     }
 }
