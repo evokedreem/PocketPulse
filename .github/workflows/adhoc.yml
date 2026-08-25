@@ -222,6 +222,19 @@ jobs:
           PROFILE_UUID_PATH="$RUNNER_TEMP/profile-uuid.txt"
           printf '%s\n' "$PROFILE_UUID" > "$PROFILE_UUID_PATH"
           chmod 600 "$PROFILE_UUID_PATH"
+          PROFILE_NAME=$(python3 - <<'PY'
+          import os
+          import plistlib
+          import re
+          from pathlib import Path
+
+          profile = plistlib.loads(Path(os.environ["PROFILE_PLIST"]).read_bytes())
+          name = profile.get("Name", "")
+          if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9.*\[\] _-]{1,128}", name):
+              raise SystemExit("profile has an unsafe or invalid name")
+          print(name)
+          PY
+          )
           LEGACY_PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           XCODE_PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
           mkdir -p "$LEGACY_PROFILE_DIR" "$XCODE_PROFILE_DIR"
@@ -231,17 +244,22 @@ jobs:
             "$LEGACY_PROFILE_DIR/$PROFILE_UUID.mobileprovision" \
             "$XCODE_PROFILE_DIR/$PROFILE_UUID.mobileprovision"
           printf 'uuid=%s\n' "$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+          printf 'name=%s\n' "$PROFILE_NAME" >> "$GITHUB_OUTPUT"
           echo "Installed a current iOS Ad Hoc profile for the expected registered iPhone only."
 
       - name: Archive signed native iPhone app
         shell: bash
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          PROFILE_NAME: ${{ steps.profile.outputs.name }}
           PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
         run: |
           set -euo pipefail
           test -n "$APPLE_TEAM_ID"
+          test -n "$PROFILE_NAME"
           [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]
+          test -s "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          test -s "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
           xcodebuild clean archive \
             -project PocketPulse.xcodeproj \
             -scheme PocketPulse \
@@ -254,7 +272,7 @@ jobs:
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY='Apple Distribution' \
-            PROVISIONING_PROFILE="$PROFILE_UUID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO
 
       - name: Export and verify device-locked IPA
