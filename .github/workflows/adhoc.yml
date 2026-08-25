@@ -51,8 +51,9 @@ jobs:
           RAW_PROFILE="$RUNNER_TEMP/PocketPulse-AdHoc.mobileprovision"
           PROFILE_PLIST="$RUNNER_TEMP/PocketPulse-AdHoc.plist"
           PROFILE_CERT_DIR="$RUNNER_TEMP/profile-certificates"
+          SIGNING_IDENTITY_PATH="$RUNNER_TEMP/signing-identity.txt"
           KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
-          export CERTIFICATE_PATH KEYCHAIN_PATH ORIGINAL_KEYCHAINS_PATH RAW_PROFILE PROFILE_PLIST PROFILE_CERT_DIR
+          export CERTIFICATE_PATH KEYCHAIN_PATH ORIGINAL_KEYCHAINS_PATH RAW_PROFILE PROFILE_PLIST PROFILE_CERT_DIR SIGNING_IDENTITY_PATH
 
           mkdir -m 700 "$PROFILE_CERT_DIR"
           python3 - <<'PY'
@@ -103,6 +104,7 @@ jobs:
           security import "$CERTIFICATE_PATH" \
             -k "$KEYCHAIN_PATH" \
             -P "$CERTIFICATE_PASSWORD" \
+            -A \
             -f pkcs12
           for profile_certificate in "$PROFILE_CERT_DIR"/*.cer; do
             security import "$profile_certificate" -k "$KEYCHAIN_PATH" -t cert -f x509 >/dev/null 2>&1 || true
@@ -137,10 +139,14 @@ jobs:
               for path in Path(os.environ["PROFILE_CERT_DIR"]).glob("*.cer")
           }
           identity_hashes = {value.upper() for value in identity_hashes}
-          if not identity_hashes.intersection(profile_hashes):
+          matching_identities = identity_hashes.intersection(profile_hashes)
+          if len(matching_identities) != 1:
               raise SystemExit(
-                  f"no valid profile-matching code-signing identity; valid identities={len(identity_hashes)}"
+                  f"expected one profile-matching code-signing identity; matches={len(matching_identities)}"
               )
+          identity_path = Path(os.environ["SIGNING_IDENTITY_PATH"])
+          identity_path.write_text(next(iter(matching_identities)) + "\n", encoding="utf-8")
+          identity_path.chmod(0o600)
           print("Validated one profile-matching code-signing identity")
           PY
 
@@ -260,6 +266,22 @@ jobs:
           [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]
           test -s "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
           test -s "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          SIGNING_IDENTITY=$(tr -d '\r\n' < "$RUNNER_TEMP/signing-identity.txt")
+          [[ "$SIGNING_IDENTITY" =~ ^[A-F0-9]{40}$ ]]
+          SIGNING_PROBE="$RUNNER_TEMP/codesign-probe"
+          cp /usr/bin/true "$SIGNING_PROBE"
+          SIGNING_IDENTITY="$SIGNING_IDENTITY" SIGNING_PROBE="$SIGNING_PROBE" python3 - <<'PY'
+          import os
+          import subprocess
+
+          subprocess.run(
+              ["codesign", "--force", "--sign", os.environ["SIGNING_IDENTITY"], os.environ["SIGNING_PROBE"]],
+              check=True,
+              timeout=30,
+          )
+          subprocess.run(["codesign", "--verify", "--strict", os.environ["SIGNING_PROBE"]], check=True)
+          PY
+          rm -f "$SIGNING_PROBE"
           xcodebuild clean archive \
             -project PocketPulse.xcodeproj \
             -scheme PocketPulse \
@@ -271,7 +293,7 @@ jobs:
             PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY='Apple Distribution' \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO
 
@@ -505,6 +527,8 @@ jobs:
             "$RUNNER_TEMP/PocketPulse-AdHoc.plist"
             "$RUNNER_TEMP/profile-certificates"
             "$RUNNER_TEMP/profile-uuid.txt"
+            "$RUNNER_TEMP/signing-identity.txt"
+            "$RUNNER_TEMP/codesign-probe"
             "$RUNNER_TEMP/PocketPulseDerivedData"
             "$RUNNER_TEMP/PocketPulse.xcarchive"
             "$RUNNER_TEMP/PocketPulseExport"
