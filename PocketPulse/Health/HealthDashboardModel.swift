@@ -87,8 +87,9 @@ final class HealthDashboardModel: ObservableObject {
             state = .loading
         }
         defer {
-            guard generation == operationGeneration else { return }
-            isRefreshing = false
+            if generation == operationGeneration {
+                isRefreshing = false
+            }
         }
 
         do {
