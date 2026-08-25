@@ -1,0 +1,173 @@
+name: Private TestFlight
+
+on:
+  push:
+    tags:
+      - "native-testflight-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-testflight
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      APP_BUNDLE_ID: com.evokedreem.pocketpulse
+      APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+      APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+      APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.IOS_TEMP_KEYCHAIN_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release source and required credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$(git rev-parse origin/native-swiftui)"
+          for variable in \
+            APPSTORE_API_KEY_ID \
+            APPSTORE_ISSUER_ID \
+            APPSTORE_API_PRIVATE_KEY \
+            APPLE_TEAM_ID \
+            CERTIFICATE_BASE64 \
+            CERTIFICATE_PASSWORD \
+            KEYCHAIN_PASSWORD; do
+            test -n "${!variable}" || {
+              echo "Required TestFlight configuration is missing: $variable" >&2
+              exit 1
+            }
+          done
+          test "$APP_BUNDLE_ID" = "com.evokedreem.pocketpulse"
+          xcodebuild -version
+
+      - name: Configure App Store Connect authentication
+        id: appstore-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APPSTORE_API_KEY_ID}.p8"
+          printf '%s' "$APPSTORE_API_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          grep -q 'BEGIN PRIVATE KEY' "$KEY_PATH"
+          echo "key-path=$KEY_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Import Apple distribution certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          CERTIFICATE_PATH="$RUNNER_TEMP/pocketpulse-distribution.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/pocketpulse-signing.keychain-db"
+          export CERTIFICATE_PATH
+          python3 -c 'import base64, os; open(os.environ["CERTIFICATE_PATH"], "wb").write(base64.b64decode(os.environ["CERTIFICATE_BASE64"], validate=True))'
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q 'Apple Distribution'
+
+      - name: Archive signed native iPhone app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild clean archive \
+            -project PocketPulse.xcodeproj \
+            -scheme PocketPulse \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/PocketPulse.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath '${{ steps.appstore-auth.outputs.key-path }}' \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CODE_SIGN_STYLE=Automatic \
+            INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO
+
+      - name: Export signed App Store IPA
+        id: export
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          EXPORT_PATH="$RUNNER_TEMP/PocketPulseExport"
+          cat > "$EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>destination</key>
+            <string>export</string>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>teamID</key>
+            <string>$APPLE_TEAM_ID</string>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$EXPORT_OPTIONS"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/PocketPulse.xcarchive" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath '${{ steps.appstore-auth.outputs.key-path }}' \
+            -authenticationKeyID "$APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$APPSTORE_ISSUER_ID"
+          IPA_PATH=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa' -print -quit)
+          test -n "$IPA_PATH"
+          unzip -p "$IPA_PATH" 'Payload/*.app/Info.plist' > "$RUNNER_TEMP/PocketPulse-Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$RUNNER_TEMP/PocketPulse-Info.plist")" = "$APP_BUNDLE_ID"
+          test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/PocketPulse-Info.plist")" = "1.0"
+          test "$(plutil -extract CFBundleVersion raw "$RUNNER_TEMP/PocketPulse-Info.plist")" = "${{ github.run_number }}"
+          echo "ipa-path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload privately to Internal TestFlight
+        uses: apple-actions/upload-testflight-build@5e75ff58276689011512ba87a381d93dc67dbcf8 # v5.3.0
+        with:
+          app-path: ${{ steps.export.outputs.ipa-path }}
+          issuer-id: ${{ vars.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ vars.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+          release-notes: "Private native SwiftUI build for Garrette's iPhone."
+          uses-non-exempt-encryption: "false"
+          wait-for-processing: "true"
+          backend: AppStoreAPI
+
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          security delete-keychain "$RUNNER_TEMP/pocketpulse-signing.keychain-db"
+          rm -f \
+            "$RUNNER_TEMP/pocketpulse-distribution.p12" \
+            "$RUNNER_TEMP/AuthKey_${APPSTORE_API_KEY_ID}.p8"
