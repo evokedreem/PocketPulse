@@ -367,7 +367,7 @@ jobs:
           test -f "$EXECUTABLE_PATH"
 
           CERT_PREFIX="$RUNNER_TEMP/signer-cert-"
-          codesign -d --extract-certificates "$CERT_PREFIX" "$APP_PATH"
+          codesign -d --extract-certificates="$CERT_PREFIX" "$APP_PATH"
           LEAF_CERT="${CERT_PREFIX}0"
           test -s "$LEAF_CERT"
           security verify-cert -c "$LEAF_CERT" -p codeSign
