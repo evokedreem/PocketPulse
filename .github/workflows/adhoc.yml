@@ -38,17 +38,23 @@ jobs:
         env:
           CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE_BASE64 }}
         run: |
           set -euo pipefail
           test -n "$CERTIFICATE_BASE64"
           test -n "$CERTIFICATE_PASSWORD"
+          test -n "$PROFILE_BASE64"
           umask 077
           CERTIFICATE_PATH="$RUNNER_TEMP/pocketpulse-distribution.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/pocketpulse-signing.keychain-db"
           ORIGINAL_KEYCHAINS_PATH="$RUNNER_TEMP/original-keychains.json"
+          RAW_PROFILE="$RUNNER_TEMP/PocketPulse-AdHoc.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/PocketPulse-AdHoc.plist"
+          PROFILE_CERT_DIR="$RUNNER_TEMP/profile-certificates"
           KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
-          export CERTIFICATE_PATH KEYCHAIN_PATH ORIGINAL_KEYCHAINS_PATH
+          export CERTIFICATE_PATH KEYCHAIN_PATH ORIGINAL_KEYCHAINS_PATH RAW_PROFILE PROFILE_PLIST PROFILE_CERT_DIR
 
+          mkdir -m 700 "$PROFILE_CERT_DIR"
           python3 - <<'PY'
           import base64
           import json
@@ -60,6 +66,9 @@ jobs:
           Path(os.environ["CERTIFICATE_PATH"]).write_bytes(
               base64.b64decode(os.environ["CERTIFICATE_BASE64"], validate=True)
           )
+          Path(os.environ["RAW_PROFILE"]).write_bytes(
+              base64.b64decode(os.environ["PROFILE_BASE64"], validate=True)
+          )
           current = subprocess.check_output(
               ["security", "list-keychains", "-d", "user"], text=True
           )
@@ -67,7 +76,27 @@ jobs:
               json.dumps(shlex.split(current)), encoding="utf-8"
           )
           PY
-          chmod 600 "$CERTIFICATE_PATH" "$ORIGINAL_KEYCHAINS_PATH"
+          chmod 600 "$CERTIFICATE_PATH" "$RAW_PROFILE" "$ORIGINAL_KEYCHAINS_PATH"
+          security cms -D -i "$RAW_PROFILE" > "$PROFILE_PLIST"
+          chmod 600 "$PROFILE_PLIST"
+          python3 - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          profile = plistlib.loads(Path(os.environ["PROFILE_PLIST"]).read_bytes())
+          certificates = profile.get("DeveloperCertificates", [])
+          if not isinstance(certificates, list) or not certificates:
+              raise SystemExit("profile has no developer certificates")
+          destination = Path(os.environ["PROFILE_CERT_DIR"])
+          for index, certificate in enumerate(certificates):
+              if not isinstance(certificate, bytes) or not certificate:
+                  raise SystemExit("profile contains an invalid developer certificate")
+              path = destination / f"profile-certificate-{index}.cer"
+              path.write_bytes(certificate)
+              path.chmod(0o600)
+          PY
+
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -75,14 +104,19 @@ jobs:
             -k "$KEYCHAIN_PATH" \
             -P "$CERTIFICATE_PASSWORD" \
             -f pkcs12
+          for profile_certificate in "$PROFILE_CERT_DIR"/*.cer; do
+            security import "$profile_certificate" -k "$KEYCHAIN_PATH" -t cert -f x509 >/dev/null 2>&1 || true
+          done
           security set-key-partition-list \
             -S apple-tool:,apple: \
             -s \
             -k "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN_PATH"
           python3 - <<'PY'
+          import hashlib
           import json
           import os
+          import re
           import subprocess
           from pathlib import Path
 
@@ -93,8 +127,22 @@ jobs:
               ["security", "list-keychains", "-d", "user", "-s", os.environ["KEYCHAIN_PATH"], *original],
               check=True,
           )
+          identities = subprocess.check_output(
+              ["security", "find-identity", "-v", "-p", "codesigning", os.environ["KEYCHAIN_PATH"]],
+              text=True,
+          )
+          identity_hashes = set(re.findall(r"\b([A-Fa-f0-9]{40})\b", identities))
+          profile_hashes = {
+              hashlib.sha1(path.read_bytes()).hexdigest().upper()
+              for path in Path(os.environ["PROFILE_CERT_DIR"]).glob("*.cer")
+          }
+          identity_hashes = {value.upper() for value in identity_hashes}
+          if not identity_hashes.intersection(profile_hashes):
+              raise SystemExit(
+                  f"no valid profile-matching code-signing identity; valid identities={len(identity_hashes)}"
+              )
+          print("Validated one profile-matching code-signing identity")
           PY
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q 'Apple Distribution'
 
       - name: Install and validate one-device Ad Hoc profile
         id: profile
@@ -437,6 +485,7 @@ jobs:
             "$RUNNER_TEMP/pocketpulse-distribution.p12"
             "$RUNNER_TEMP/PocketPulse-AdHoc.mobileprovision"
             "$RUNNER_TEMP/PocketPulse-AdHoc.plist"
+            "$RUNNER_TEMP/profile-certificates"
             "$RUNNER_TEMP/profile-uuid.txt"
             "$RUNNER_TEMP/PocketPulseDerivedData"
             "$RUNNER_TEMP/PocketPulse.xcarchive"
