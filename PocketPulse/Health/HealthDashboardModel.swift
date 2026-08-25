@@ -9,39 +9,48 @@ final class HealthDashboardModel: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let provider: any HealthDataProviding
-    private let now: () -> Date
-    private var refreshGeneration = 0
-    private var hasCompletedAccessFlow = false
+    private let now: @Sendable () -> Date
+    private var stableState: HealthConnectionState
+    private var operationGeneration = 0
 
     init(
         provider: any HealthDataProviding,
-        now: @escaping () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.provider = provider
         self.now = now
-        self.state = provider.isHealthDataAvailable ? .notRequested : .unavailable
-        self.summary = .empty(at: now())
-    }
-
-    func resumeAfterPriorAccessRequest() {
-        hasCompletedAccessFlow = true
+        let initialState: HealthConnectionState = provider.isHealthDataAvailable
+            ? .notRequested
+            : .unavailable
+        state = initialState
+        stableState = initialState
+        summary = .empty()
     }
 
     func requestAuthorization() async {
         guard provider.isHealthDataAvailable else {
+            stableState = .unavailable
             state = .unavailable
             return
         }
 
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        isRefreshing = false
         state = .requesting
         errorMessage = nil
+
         do {
             try await provider.requestAuthorization()
-            hasCompletedAccessFlow = true
+            try Task.checkCancellation()
+            guard generation == operationGeneration else { return }
+            stableState = .ready
         } catch is CancellationError {
-            state = hasCompletedAccessFlow ? .ready : .notRequested
+            guard generation == operationGeneration else { return }
+            state = stableState
             return
         } catch {
+            guard generation == operationGeneration else { return }
             fail(with: error)
             return
         }
@@ -49,65 +58,69 @@ final class HealthDashboardModel: ObservableObject {
         await refresh()
     }
 
+    func resumeAfterAccessReview() async {
+        guard provider.isHealthDataAvailable else {
+            stableState = .unavailable
+            state = .unavailable
+            return
+        }
+        operationGeneration &+= 1
+        isRefreshing = false
+        stableState = .ready
+        state = .ready
+        await refresh()
+    }
+
     func refresh(metrics: [HealthMetric] = HealthMetric.allCases) async {
         guard provider.isHealthDataAvailable else {
+            stableState = .unavailable
             state = .unavailable
             return
         }
 
-        refreshGeneration &+= 1
-        let generation = refreshGeneration
-        let fallbackState: HealthConnectionState =
-            hasCompletedAccessFlow || !summary.values.isEmpty ? .ready : .notRequested
+        operationGeneration &+= 1
+        let generation = operationGeneration
+        let fallbackState = stableState
         isRefreshing = true
         errorMessage = nil
         if summary.values.isEmpty {
             state = .loading
         }
         defer {
-            if generation == refreshGeneration {
-                isRefreshing = false
-            }
+            guard generation == operationGeneration else { return }
+            isRefreshing = false
         }
 
         do {
             let fetched = try await provider.fetchSummary(for: metrics, now: now())
             try Task.checkCancellation()
-            guard generation == refreshGeneration else { return }
-
-            if Set(metrics) == Set(HealthMetric.allCases) {
-                summary = fetched
-            } else {
-                var merged = summary.values
-                for metric in metrics {
-                    merged.removeValue(forKey: metric)
-                }
-                merged.merge(fetched.values) { _, refreshed in refreshed }
-                summary = HealthSummary(generatedAt: fetched.generatedAt, values: merged)
-            }
+            guard generation == operationGeneration else { return }
+            let requested = Set(metrics)
+            summary.values = summary.values.filter { !requested.contains($0.key) }
+            summary.values.merge(fetched.values) { _, refreshed in refreshed }
+            summary.generatedAt = fetched.generatedAt
+            stableState = .ready
             state = .ready
         } catch is CancellationError {
-            guard generation == refreshGeneration else { return }
+            guard generation == operationGeneration else { return }
             state = fallbackState
         } catch {
-            guard generation == refreshGeneration else { return }
+            guard generation == operationGeneration else { return }
             fail(with: error)
         }
     }
 
-    func history(
-        for metric: HealthMetric,
-        range: HealthRange
-    ) async throws -> MetricHistory {
-        try await provider.fetchHistory(for: metric, range: range, now: now())
+    func history(for metric: HealthMetric, range: HealthRange) async throws -> MetricHistory {
+        try Task.checkCancellation()
+        let result = try await provider.fetchHistory(for: metric, range: range, now: now())
+        try Task.checkCancellation()
+        return result
     }
 
     func save(_ entry: ManualHealthEntry) async throws {
         do {
             try await provider.save(entry)
-            await refresh()
-        } catch is CancellationError {
-            throw CancellationError()
+            await refresh(metrics: [entry.metric])
         } catch {
             fail(with: error)
             throw error
@@ -116,13 +129,16 @@ final class HealthDashboardModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
-        if case .failed = state {
-            state = hasCompletedAccessFlow || !summary.values.isEmpty ? .ready : .notRequested
-        }
+        state = stableState
     }
 
     private func fail(with error: Error) {
-        let message = error.localizedDescription
+        let message: String
+        if let localized = error as? LocalizedError, let description = localized.errorDescription {
+            message = description
+        } else {
+            message = error.localizedDescription
+        }
         errorMessage = message
         state = .failed(message)
     }
