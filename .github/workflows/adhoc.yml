@@ -303,11 +303,13 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           EXPECTED_DEVICE_HASH: ${{ secrets.IOS_REGISTERED_DEVICE_UDID_SHA256 }}
+          PROFILE_NAME: ${{ steps.profile.outputs.name }}
           PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
         run: |
           set -euo pipefail
           test -n "$APPLE_TEAM_ID"
           test -n "$EXPECTED_DEVICE_HASH"
+          test -n "$PROFILE_NAME"
           [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]
           EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
           EXPORT_PATH="$RUNNER_TEMP/PocketPulseExport"
@@ -322,7 +324,7 @@ jobs:
               "destination": "export",
               "method": "release-testing",
               "provisioningProfiles": {
-                  os.environ["APP_BUNDLE_ID"]: os.environ["PROFILE_UUID"],
+                  os.environ["APP_BUNDLE_ID"]: os.environ["PROFILE_NAME"],
               },
               "signingCertificate": "Apple Distribution",
               "signingStyle": "manual",
