@@ -44,7 +44,7 @@ jobs:
               ".xcworkspacedata",
           }
           forbidden_reference = re.compile(
-              r"(?<![A-Za-z0-9_])(?:Expo[A-Za-z0-9_]*|React[A-Za-z0-9_]*|RCT(?:_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*))(?![A-Za-z0-9_])"
+              r"(?<![A-Za-z0-9_])(?:Expo(?:[A-Z0-9_][A-Za-z0-9_]*)?|React(?:[A-Z0-9_][A-Za-z0-9_]*)?|RCT(?:_[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*))(?![A-Za-z0-9_])"
               r"|XCRemoteSwiftPackageReference|XCLocalSwiftPackageReference|XCSwiftPackageProductDependency"
           )
           allowed = []
