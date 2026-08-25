@@ -15,7 +15,7 @@ final class HealthDashboardModel: ObservableObject {
 
     init(
         provider: any HealthDataProviding,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.provider = provider
         self.now = now
@@ -58,7 +58,7 @@ final class HealthDashboardModel: ObservableObject {
         await refresh()
     }
 
-    func resumeAfterAccessReview() async {
+    func resumeAfterPriorAccessRequest() async {
         guard provider.isHealthDataAvailable else {
             stableState = .unavailable
             state = .unavailable
@@ -97,9 +97,9 @@ final class HealthDashboardModel: ObservableObject {
             try Task.checkCancellation()
             guard generation == operationGeneration else { return }
             let requested = Set(metrics)
-            summary.values = summary.values.filter { !requested.contains($0.key) }
-            summary.values.merge(fetched.values) { _, refreshed in refreshed }
-            summary.generatedAt = fetched.generatedAt
+            var mergedValues = summary.values.filter { !requested.contains($0.key) }
+            mergedValues.merge(fetched.values) { _, refreshed in refreshed }
+            summary = HealthSummary(values: mergedValues, generatedAt: fetched.generatedAt)
             stableState = .ready
             state = .ready
         } catch is CancellationError {
