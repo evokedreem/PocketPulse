@@ -1,0 +1,475 @@
+name: Private iPhone Ad Hoc Build
+
+on:
+  push:
+    tags:
+      - "native-adhoc-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-iphone-adhoc
+  cancel-in-progress: false
+
+jobs:
+  build-signed-ipa:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      APP_BUNDLE_ID: com.evokedreem.pocketpulse
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$(git rev-parse origin/native-swiftui)"
+          test "$APP_BUNDLE_ID" = "com.evokedreem.pocketpulse"
+          xcodebuild -version
+
+      - name: Import Apple distribution certificate
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$CERTIFICATE_BASE64"
+          test -n "$CERTIFICATE_PASSWORD"
+          umask 077
+          CERTIFICATE_PATH="$RUNNER_TEMP/pocketpulse-distribution.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/pocketpulse-signing.keychain-db"
+          ORIGINAL_KEYCHAINS_PATH="$RUNNER_TEMP/original-keychains.json"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          export CERTIFICATE_PATH KEYCHAIN_PATH ORIGINAL_KEYCHAINS_PATH
+
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import shlex
+          import subprocess
+          from pathlib import Path
+
+          Path(os.environ["CERTIFICATE_PATH"]).write_bytes(
+              base64.b64decode(os.environ["CERTIFICATE_BASE64"], validate=True)
+          )
+          current = subprocess.check_output(
+              ["security", "list-keychains", "-d", "user"], text=True
+          )
+          Path(os.environ["ORIGINAL_KEYCHAINS_PATH"]).write_text(
+              json.dumps(shlex.split(current)), encoding="utf-8"
+          )
+          PY
+          chmod 600 "$CERTIFICATE_PATH" "$ORIGINAL_KEYCHAINS_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          original = json.loads(
+              Path(os.environ["ORIGINAL_KEYCHAINS_PATH"]).read_text(encoding="utf-8")
+          )
+          subprocess.run(
+              ["security", "list-keychains", "-d", "user", "-s", os.environ["KEYCHAIN_PATH"], *original],
+              check=True,
+          )
+          PY
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q 'Apple Distribution'
+
+      - name: Install and validate one-device Ad Hoc profile
+        id: profile
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          EXPECTED_DEVICE_HASH: ${{ secrets.IOS_REGISTERED_DEVICE_UDID_SHA256 }}
+          PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_TEAM_ID"
+          test -n "$EXPECTED_DEVICE_HASH"
+          test -n "$PROFILE_BASE64"
+          umask 077
+          RAW_PROFILE="$RUNNER_TEMP/PocketPulse-AdHoc.mobileprovision"
+          PROFILE_PLIST="$RUNNER_TEMP/PocketPulse-AdHoc.plist"
+          export RAW_PROFILE PROFILE_PLIST
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          Path(os.environ["RAW_PROFILE"]).write_bytes(
+              base64.b64decode(os.environ["PROFILE_BASE64"], validate=True)
+          )
+          PY
+          chmod 600 "$RAW_PROFILE"
+          security cms -D -i "$RAW_PROFILE" > "$PROFILE_PLIST"
+          chmod 600 "$PROFILE_PLIST"
+          PROFILE_UUID=$(python3 - <<'PY'
+          import datetime
+          import hashlib
+          import hmac
+          import os
+          import plistlib
+          import re
+          from pathlib import Path
+
+          profile = plistlib.loads(Path(os.environ["PROFILE_PLIST"]).read_bytes())
+          entitlements = profile.get("Entitlements", {})
+          team_id = os.environ["APPLE_TEAM_ID"]
+          bundle_id = os.environ["APP_BUNDLE_ID"]
+          uuid = profile.get("UUID", "")
+          devices = profile.get("ProvisionedDevices", [])
+          platforms = profile.get("Platform", [])
+          expiration = profile.get("ExpirationDate")
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          require(
+              re.fullmatch(
+                  r"[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}",
+                  uuid,
+              ),
+              "invalid profile UUID",
+          )
+          require(profile.get("TeamIdentifier") == [team_id], "wrong profile team")
+          require(entitlements.get("application-identifier") == f"{team_id}.{bundle_id}", "wrong profile app ID")
+          require(isinstance(platforms, list) and "iOS" in platforms, "profile is not for iOS")
+          require(
+              isinstance(expiration, datetime.datetime)
+              and expiration > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+              "profile is expired",
+          )
+          require(isinstance(devices, list) and len(devices) == 1, "profile must authorize exactly one device")
+          actual_hash = hashlib.sha256(devices[0].encode("utf-8")).hexdigest()
+          require(hmac.compare_digest(actual_hash, os.environ["EXPECTED_DEVICE_HASH"]), "profile authorizes the wrong device")
+          require(entitlements.get("get-task-allow") is False, "development profile is not allowed")
+          require(profile.get("ProvisionsAllDevices") is not True, "enterprise profile is not allowed")
+          require(bool(profile.get("DeveloperCertificates")), "profile contains no signing certificate")
+          print(uuid.upper())
+          PY
+          )
+          PROFILE_UUID_PATH="$RUNNER_TEMP/profile-uuid.txt"
+          printf '%s\n' "$PROFILE_UUID" > "$PROFILE_UUID_PATH"
+          chmod 600 "$PROFILE_UUID_PATH"
+          LEGACY_PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          XCODE_PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$LEGACY_PROFILE_DIR" "$XCODE_PROFILE_DIR"
+          cp "$RAW_PROFILE" "$LEGACY_PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          cp "$RAW_PROFILE" "$XCODE_PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          chmod 600 \
+            "$LEGACY_PROFILE_DIR/$PROFILE_UUID.mobileprovision" \
+            "$XCODE_PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+          printf 'uuid=%s\n' "$PROFILE_UUID" >> "$GITHUB_OUTPUT"
+          echo "Installed a current iOS Ad Hoc profile for the expected registered iPhone only."
+
+      - name: Archive signed native iPhone app
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_TEAM_ID"
+          [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]
+          xcodebuild clean archive \
+            -project PocketPulse.xcodeproj \
+            -scheme PocketPulse \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/PocketPulseDerivedData" \
+            -archivePath "$RUNNER_TEMP/PocketPulse.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PRODUCT_BUNDLE_IDENTIFIER="$APP_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY='Apple Distribution' \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+            INFOPLIST_KEY_ITSAppUsesNonExemptEncryption=NO
+
+      - name: Export and verify device-locked IPA
+        id: export
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          EXPECTED_DEVICE_HASH: ${{ secrets.IOS_REGISTERED_DEVICE_UDID_SHA256 }}
+          PROFILE_UUID: ${{ steps.profile.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_TEAM_ID"
+          test -n "$EXPECTED_DEVICE_HASH"
+          [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          EXPORT_PATH="$RUNNER_TEMP/PocketPulseExport"
+          export EXPORT_OPTIONS
+          python3 - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          options = {
+              "compileBitcode": False,
+              "destination": "export",
+              "method": "release-testing",
+              "provisioningProfiles": {
+                  os.environ["APP_BUNDLE_ID"]: os.environ["PROFILE_UUID"],
+              },
+              "signingCertificate": "Apple Distribution",
+              "signingStyle": "manual",
+              "stripSwiftSymbols": True,
+              "teamID": os.environ["APPLE_TEAM_ID"],
+          }
+          Path(os.environ["EXPORT_OPTIONS"]).write_bytes(
+              plistlib.dumps(options, fmt=plistlib.FMT_XML, sort_keys=True)
+          )
+          PY
+          chmod 600 "$EXPORT_OPTIONS"
+          plutil -lint "$EXPORT_OPTIONS"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/PocketPulse.xcarchive" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS"
+
+          IPA_COUNT=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa' | wc -l | tr -d ' ')
+          test "$IPA_COUNT" = "1"
+          IPA_SOURCE=$(find "$EXPORT_PATH" -maxdepth 1 -type f -name '*.ipa' -print -quit)
+          IPA_PATH="$RUNNER_TEMP/PocketPulse-native.ipa"
+          cp "$IPA_SOURCE" "$IPA_PATH"
+
+          VERIFY_DIR="$RUNNER_TEMP/verify-ipa"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k "$IPA_PATH" "$VERIFY_DIR"
+          APP_COUNT=$(find "$VERIFY_DIR/Payload" -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')
+          test "$APP_COUNT" = "1"
+          APP_PATH=$(find "$VERIFY_DIR/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)
+          test -f "$APP_PATH/embedded.mobileprovision"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dvv "$APP_PATH" 2> "$RUNNER_TEMP/signer-details.txt"
+          grep -q '^Authority=Apple Distribution:' "$RUNNER_TEMP/signer-details.txt"
+          grep -Fxq "TeamIdentifier=$APPLE_TEAM_ID" "$RUNNER_TEMP/signer-details.txt"
+          test "$(plutil -extract CFBundleIdentifier raw "$APP_PATH/Info.plist")" = "$APP_BUNDLE_ID"
+          test "$(plutil -extract CFBundleShortVersionString raw "$APP_PATH/Info.plist")" = "1.0"
+          test "$(plutil -extract CFBundleVersion raw "$APP_PATH/Info.plist")" = "${{ github.run_number }}"
+          EXECUTABLE_NAME=$(plutil -extract CFBundleExecutable raw "$APP_PATH/Info.plist")
+          EXECUTABLE_PATH="$APP_PATH/$EXECUTABLE_NAME"
+          test -f "$EXECUTABLE_PATH"
+
+          CERT_PREFIX="$RUNNER_TEMP/signer-cert-"
+          codesign -d --extract-certificates "$CERT_PREFIX" "$APP_PATH"
+          LEAF_CERT="${CERT_PREFIX}0"
+          test -s "$LEAF_CERT"
+          security verify-cert -c "$LEAF_CERT" -p codeSign
+          openssl x509 -inform DER -in "$LEAF_CERT" -checkend 0 -noout
+          CERT_SUBJECT=$(openssl x509 -inform DER -in "$LEAF_CERT" -noout -subject -nameopt RFC2253)
+          printf '%s\n' "$CERT_SUBJECT" | grep -Eq "(^|,)OU=${APPLE_TEAM_ID}(,|$)"
+
+          security cms -D -i "$APP_PATH/embedded.mobileprovision" > "$RUNNER_TEMP/embedded-profile.plist"
+          EMBEDDED_PROFILE="$RUNNER_TEMP/embedded-profile.plist" LEAF_CERT="$LEAF_CERT" python3 - <<'PY'
+          import datetime
+          import hashlib
+          import hmac
+          import os
+          import plistlib
+          from pathlib import Path
+
+          profile = plistlib.loads(Path(os.environ["EMBEDDED_PROFILE"]).read_bytes())
+          entitlements = profile.get("Entitlements", {})
+          devices = profile.get("ProvisionedDevices", [])
+          profile_certificates = profile.get("DeveloperCertificates", [])
+          leaf_certificate = Path(os.environ["LEAF_CERT"]).read_bytes()
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          require(profile.get("UUID", "").upper() == os.environ["PROFILE_UUID"], "embedded profile UUID mismatch")
+          require(profile.get("TeamIdentifier") == [os.environ["APPLE_TEAM_ID"]], "embedded profile team mismatch")
+          require(
+              entitlements.get("application-identifier") == f'{os.environ["APPLE_TEAM_ID"]}.{os.environ["APP_BUNDLE_ID"]}',
+              "embedded profile app ID mismatch",
+          )
+          require("iOS" in profile.get("Platform", []), "embedded profile is not for iOS")
+          require(
+              profile.get("ExpirationDate") > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+              "embedded profile is expired",
+          )
+          require(len(devices) == 1, "embedded profile must authorize exactly one device")
+          actual_hash = hashlib.sha256(devices[0].encode("utf-8")).hexdigest()
+          require(hmac.compare_digest(actual_hash, os.environ["EXPECTED_DEVICE_HASH"]), "embedded profile authorizes wrong device")
+          require(entitlements.get("get-task-allow") is False, "embedded profile permits debugging")
+          require(profile.get("ProvisionsAllDevices") is not True, "embedded profile is enterprise-wide")
+          leaf_fingerprint = hashlib.sha256(leaf_certificate).digest()
+          require(
+              any(
+                  hmac.compare_digest(leaf_fingerprint, hashlib.sha256(certificate).digest())
+                  for certificate in profile_certificates
+              ),
+              "actual signer certificate is not authorized by embedded profile",
+          )
+          PY
+
+          codesign -d --entitlements :- "$APP_PATH" > "$RUNNER_TEMP/signed-entitlements.plist" 2> "$RUNNER_TEMP/entitlements-diagnostics.txt"
+          SIGNED_ENTITLEMENTS="$RUNNER_TEMP/signed-entitlements.plist" EMBEDDED_PROFILE="$RUNNER_TEMP/embedded-profile.plist" python3 - <<'PY'
+          import fnmatch
+          import os
+          import plistlib
+          from pathlib import Path
+
+          entitlements = plistlib.loads(Path(os.environ["SIGNED_ENTITLEMENTS"]).read_bytes())
+          profile = plistlib.loads(Path(os.environ["EMBEDDED_PROFILE"]).read_bytes())
+          profile_entitlements = profile.get("Entitlements", {})
+          expected_app_id = f'{os.environ["APPLE_TEAM_ID"]}.{os.environ["APP_BUNDLE_ID"]}'
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def authorized(signed, allowed):
+              if isinstance(allowed, str):
+                  return isinstance(signed, str) and fnmatch.fnmatchcase(signed, allowed)
+              if isinstance(allowed, list):
+                  return isinstance(signed, list) and all(
+                      any(authorized(item, candidate) for candidate in allowed)
+                      for item in signed
+                  )
+              if isinstance(allowed, dict):
+                  return isinstance(signed, dict) and set(signed) <= set(allowed) and all(
+                      authorized(value, allowed[key]) for key, value in signed.items()
+                  )
+              return signed == allowed
+
+          require(set(entitlements) <= set(profile_entitlements), "signed app has an entitlement absent from the profile")
+          for key, value in entitlements.items():
+              require(authorized(value, profile_entitlements[key]), f"signed entitlement is not profile-authorized: {key}")
+          require(entitlements.get("application-identifier") == expected_app_id, "signed app ID entitlement mismatch")
+          require(
+              entitlements.get("com.apple.developer.team-identifier") == os.environ["APPLE_TEAM_ID"],
+              "signed team entitlement mismatch",
+          )
+          require(entitlements.get("get-task-allow") in (None, False), "signed app permits debugging")
+          groups = entitlements.get("keychain-access-groups", [])
+          require(all(group == expected_app_id for group in groups), "unexpected signed keychain access group")
+          PY
+
+          ARCHS=$(lipo -archs "$EXECUTABLE_PATH")
+          test "$ARCHS" = "arm64"
+          echo "ipa-path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+          echo "version=1.0" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore keychain and remove signing material
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cleanup_status=0
+          KEYCHAIN_PATH="$RUNNER_TEMP/pocketpulse-signing.keychain-db"
+          ORIGINAL_KEYCHAINS_PATH="$RUNNER_TEMP/original-keychains.json"
+
+          if [ -f "$ORIGINAL_KEYCHAINS_PATH" ]; then
+            ORIGINAL_KEYCHAINS_PATH="$ORIGINAL_KEYCHAINS_PATH" python3 - <<'PY'
+          import json
+          import os
+          import shlex
+          import subprocess
+          from pathlib import Path
+
+          original = json.loads(
+              Path(os.environ["ORIGINAL_KEYCHAINS_PATH"]).read_text(encoding="utf-8")
+          )
+          subprocess.run(
+              ["security", "list-keychains", "-d", "user", "-s", *original],
+              check=True,
+          )
+          current = shlex.split(
+              subprocess.check_output(["security", "list-keychains", "-d", "user"], text=True)
+          )
+          if current != original:
+              raise SystemExit("failed to restore original keychain search list")
+          PY
+            [ "$?" -eq 0 ] || cleanup_status=1
+          fi
+
+          security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || rm -f "$KEYCHAIN_PATH"
+          rm -f "$KEYCHAIN_PATH"
+          if [ -e "$KEYCHAIN_PATH" ] || security list-keychains -d user | grep -Fq "$KEYCHAIN_PATH"; then
+            echo "Temporary signing keychain was not fully removed." >&2
+            cleanup_status=1
+          fi
+
+          if [ -f "$RUNNER_TEMP/profile-uuid.txt" ]; then
+            PROFILE_UUID=$(tr -d '\r\n' < "$RUNNER_TEMP/profile-uuid.txt")
+            if [[ "$PROFILE_UUID" =~ ^[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$ ]]; then
+              rm -f \
+                "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision" \
+                "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+              [ ! -e "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision" ] || cleanup_status=1
+              [ ! -e "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision" ] || cleanup_status=1
+            else
+              echo "Refusing cleanup with an invalid stored profile UUID." >&2
+              cleanup_status=1
+            fi
+          fi
+
+          CLEANUP_PATHS=(
+            "$RUNNER_TEMP/pocketpulse-distribution.p12"
+            "$RUNNER_TEMP/PocketPulse-AdHoc.mobileprovision"
+            "$RUNNER_TEMP/PocketPulse-AdHoc.plist"
+            "$RUNNER_TEMP/profile-uuid.txt"
+            "$RUNNER_TEMP/PocketPulseDerivedData"
+            "$RUNNER_TEMP/PocketPulse.xcarchive"
+            "$RUNNER_TEMP/PocketPulseExport"
+            "$RUNNER_TEMP/ExportOptions.plist"
+            "$RUNNER_TEMP/verify-ipa"
+            "$RUNNER_TEMP/embedded-profile.plist"
+            "$RUNNER_TEMP/signed-entitlements.plist"
+            "$RUNNER_TEMP/signer-details.txt"
+            "$RUNNER_TEMP/entitlements-diagnostics.txt"
+            "$RUNNER_TEMP/original-keychains.json"
+          )
+          rm -rf "${CLEANUP_PATHS[@]}" "$RUNNER_TEMP"/signer-cert-* || cleanup_status=1
+          for path in "${CLEANUP_PATHS[@]}"; do
+            [ ! -e "$path" ] || cleanup_status=1
+          done
+          compgen -G "$RUNNER_TEMP/signer-cert-*" >/dev/null && cleanup_status=1
+          exit "$cleanup_status"
+
+      - name: Upload verified signed IPA artifact
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: PocketPulse-native-adhoc
+          path: ${{ steps.export.outputs.ipa-path }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Remove retained IPA
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f "$RUNNER_TEMP/PocketPulse-native.ipa"
+          test ! -e "$RUNNER_TEMP/PocketPulse-native.ipa"
