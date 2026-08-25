@@ -38,6 +38,7 @@ struct ContentView: View {
             .tabItem {
                 Label("Privacy", systemImage: "lock.shield.fill")
             }
+            }
 
             if scenePhase != .active {
                 HealthAppSwitcherCover()
