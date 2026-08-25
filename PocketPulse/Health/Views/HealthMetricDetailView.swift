@@ -9,6 +9,7 @@ struct HealthMetricDetailView: View {
     @State private var history: MetricHistory?
     @State private var isLoading = false
     @State private var historyError: String?
+    @State private var historyRequestID = UUID()
     @State private var showingEntry = false
 
     var body: some View {
@@ -38,11 +39,11 @@ struct HealthMetricDetailView: View {
             }
         }
         .task(id: range) {
-            await loadHistory()
+            await loadHistory(for: range)
         }
         .sheet(isPresented: $showingEntry) {
             ManualEntrySheet(metric: metric, model: model) {
-                Task { await loadHistory() }
+                Task { await loadHistory(for: range) }
             }
         }
     }
@@ -157,7 +158,6 @@ struct HealthMetricDetailView: View {
                 .accessibilityLabel("\(metric.title) chart for the last \(range.rawValue) days")
             } else {
                 HealthEmptyState(metric: metric)
-                    .healthCard()
             }
         }
         .padding(18)
@@ -248,13 +248,26 @@ struct HealthMetricDetailView: View {
         }
     }
 
-    private func loadHistory() async {
+    private func loadHistory(for requestedRange: HealthRange) async {
+        let requestID = UUID()
+        historyRequestID = requestID
         isLoading = true
+        history = nil
         historyError = nil
-        defer { isLoading = false }
+        defer {
+            if historyRequestID == requestID {
+                isLoading = false
+            }
+        }
         do {
-            history = try await model.history(for: metric, range: range)
+            let loaded = try await model.history(for: metric, range: requestedRange)
+            try Task.checkCancellation()
+            guard historyRequestID == requestID, range == requestedRange else { return }
+            history = loaded
+        } catch is CancellationError {
+            return
         } catch {
+            guard historyRequestID == requestID, range == requestedRange else { return }
             historyError = error.localizedDescription
         }
     }
@@ -303,7 +316,7 @@ private struct ManualEntrySheet: View {
                     }
                 }
 
-                Section(metric == .mindfulMinutes ? "Start Time" : "Date & Time") {
+                Section(metric == .mindfulMinutes ? "End Time" : "Date & Time") {
                     DatePicker("Recorded", selection: $date, in: ...Date.now)
                         .datePickerStyle(.compact)
                 }

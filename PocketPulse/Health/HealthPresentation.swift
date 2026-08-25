@@ -28,12 +28,17 @@ enum HealthValueFormatter {
         case .bodyMass, .leanBodyMass:
             return "\(number(value, locale: locale, minimumFractionDigits: 1, maximumFractionDigits: 1)) lb"
         case .height:
-            let totalInches = max(0, Int(value.rounded()))
+            let totalInches = max(0, clampedInt(value))
             return "\(totalInches / 12) ft \(totalInches % 12) in"
         case .bodyMassIndex:
             return number(value, locale: locale, maximumFractionDigits: 1)
         case .sleep:
-            let totalMinutes = max(0, Int((value * 60).rounded()))
+            let totalMinutes: Int
+            if value >= Double(Int.max) / 60 {
+                totalMinutes = Int.max
+            } else {
+                totalMinutes = max(0, clampedInt(value * 60))
+            }
             let hours = totalMinutes / 60
             let minutes = totalMinutes % 60
             if hours == 0 { return "\(minutes) min" }
@@ -67,6 +72,14 @@ enum HealthValueFormatter {
         formatter.maximumFractionDigits = maximumFractionDigits
         formatter.roundingMode = .halfUp
         return formatter.string(from: NSNumber(value: value)) ?? "—"
+    }
+
+    private static func clampedInt(_ value: Double) -> Int {
+        guard value.isFinite else { return 0 }
+        let rounded = value.rounded()
+        if rounded >= Double(Int.max) { return Int.max }
+        if rounded <= Double(Int.min) { return Int.min }
+        return Int(rounded)
     }
 }
 
@@ -109,6 +122,7 @@ enum ManualEntryValidationError: Error, Equatable, LocalizedError {
     case emptyValue
     case notANumber
     case outOfRange
+    case futureDate
 
     var errorDescription: String? {
         switch self {
@@ -116,6 +130,7 @@ enum ManualEntryValidationError: Error, Equatable, LocalizedError {
         case .emptyValue: "Enter a value."
         case .notANumber: "Enter a valid number."
         case .outOfRange: "Enter a realistic positive value."
+        case .futureDate: "Choose a date and time that is not in the future."
         }
     }
 }
@@ -143,5 +158,25 @@ enum ManualEntryValidator {
 
         guard range.contains(parsed) else { throw ManualEntryValidationError.outOfRange }
         return metric == .oxygenSaturation ? parsed / 100 : parsed
+    }
+
+    static func validate(_ entry: ManualHealthEntry, now: Date = .now) throws {
+        guard entry.metric.isWritable else { throw ManualEntryValidationError.readOnlyMetric }
+        guard entry.value.isFinite else { throw ManualEntryValidationError.notANumber }
+        guard entry.date <= now else { throw ManualEntryValidationError.futureDate }
+
+        let range: ClosedRange<Double>
+        switch entry.metric {
+        case .bodyMass: range = 20...1_000
+        case .heartRate: range = 20...300
+        case .bloodGlucose: range = 20...1_000
+        case .oxygenSaturation: range = 0.5...1
+        case .bodyTemperature: range = 80...115
+        case .water: range = 0.1...1_000
+        case .mindfulMinutes: range = 1...720
+        default: throw ManualEntryValidationError.readOnlyMetric
+        }
+
+        guard range.contains(entry.value) else { throw ManualEntryValidationError.outOfRange }
     }
 }

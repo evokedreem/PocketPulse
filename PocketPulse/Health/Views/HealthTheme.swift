@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct HealthPalette {
-    static let ink = Color(red: 0.07, green: 0.09, blue: 0.16)
+    static let ink = Color.primary
     static let muted = Color.secondary
     static let background = Color(uiColor: .systemGroupedBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)

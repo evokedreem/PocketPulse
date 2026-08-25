@@ -95,6 +95,55 @@ final class HealthDashboardModelTests: XCTestCase {
         XCTAssertEqual(provider.historyRequests, [.init(metric: .heartRate, range: .month)])
     }
 
+    func testSubsetRefreshPreservesPreviouslyLoadedMetrics() async {
+        let steps = HealthMetricValue(
+            metric: .steps,
+            value: 4_000,
+            date: now,
+            sourceName: "Test iPhone"
+        )
+        let heartRate = HealthMetricValue(
+            metric: .heartRate,
+            value: 72,
+            date: now,
+            sourceName: "Test iPhone"
+        )
+        let provider = FakeHealthDataProvider(
+            summaryResult: .success(HealthSummary(generatedAt: now, values: [.steps: steps, .heartRate: heartRate]))
+        )
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+        await model.refresh()
+
+        let updatedSteps = HealthMetricValue(
+            metric: .steps,
+            value: 5_000,
+            date: now,
+            sourceName: "Test iPhone"
+        )
+        provider.summaryResult = .success(HealthSummary(generatedAt: now, values: [.steps: updatedSteps]))
+        await model.refresh(metrics: [.steps])
+
+        XCTAssertEqual(model.summary.values[.steps], updatedSteps)
+        XCTAssertEqual(model.summary.values[.heartRate], heartRate)
+    }
+
+    func testCancelledHistoryDoesNotCreateGlobalFailureState() async {
+        let provider = FakeHealthDataProvider(historyResult: .failure(CancellationError()))
+        let model = HealthDashboardModel(provider: provider, now: { self.now })
+
+        do {
+            _ = try await model.history(for: .steps, range: .week)
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(model.state, .notRequested)
+        XCTAssertNil(model.errorMessage)
+    }
+
     private func summary(steps: Double) -> HealthSummary {
         let value = HealthMetricValue(
             metric: .steps,

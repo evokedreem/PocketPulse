@@ -43,6 +43,15 @@ final class HealthPresentationTests: XCTestCase {
         )
     }
 
+    func testHeightAndSleepFormattingDoNotTrapForExtremeFiniteValues() {
+        XCTAssertFalse(
+            HealthValueFormatter.display(Double.greatestFiniteMagnitude, for: .height, locale: locale).isEmpty
+        )
+        XCTAssertFalse(
+            HealthValueFormatter.display(Double.greatestFiniteMagnitude, for: .sleep, locale: locale).isEmpty
+        )
+    }
+
     func testTrendDirectionUsesTwoPercentNoiseTolerance() {
         XCTAssertEqual(HealthTrendAnalyzer.direction(current: 103, baseline: 100), .up)
         XCTAssertEqual(HealthTrendAnalyzer.direction(current: 97, baseline: 100), .down)

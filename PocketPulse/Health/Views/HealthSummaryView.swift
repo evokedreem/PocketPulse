@@ -296,5 +296,6 @@ private struct FavoriteMetricToggleRow: View {
                     .foregroundStyle(isSelected ? metric.tint : Color.secondary)
             }
         }
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }

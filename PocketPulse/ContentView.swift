@@ -10,7 +10,8 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView {
+        ZStack {
+            TabView {
             NavigationStack {
                 HealthSummaryView(
                     model: model,
@@ -37,10 +38,17 @@ struct ContentView: View {
             .tabItem {
                 Label("Privacy", systemImage: "lock.shield.fill")
             }
+
+            if scenePhase != .active {
+                HealthAppSwitcherCover()
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
         }
         .tint(HealthPalette.accent)
         .task {
             if healthAccessRequested, model.state == .notRequested {
+                model.resumeAfterPriorAccessRequest()
                 await model.refresh()
             }
         }
@@ -51,6 +59,29 @@ struct ContentView: View {
                   model.state != .loading else { return }
             Task { await model.refresh() }
         }
+    }
+}
+
+private struct HealthAppSwitcherCover: View {
+    var body: some View {
+        ZStack {
+            HealthPalette.background.ignoresSafeArea()
+            VStack(spacing: 14) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundStyle(HealthPalette.accent)
+                Text("PocketPulse")
+                    .font(.title2.bold())
+                    .foregroundStyle(HealthPalette.ink)
+                Text("Health details are hidden while the app is inactive.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(32)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("PocketPulse health details hidden")
     }
 }
 

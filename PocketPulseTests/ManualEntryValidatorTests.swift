@@ -55,4 +55,44 @@ final class ManualEntryValidatorTests: XCTestCase {
             XCTAssertEqual(error as? ManualEntryValidationError, .outOfRange)
         }
     }
+
+    func testValidatesNormalizedEntryAtWriteBoundary() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertNoThrow(
+            try ManualEntryValidator.validate(
+                ManualHealthEntry(metric: .oxygenSaturation, value: 0.98, date: now),
+                now: now
+            )
+        )
+
+        XCTAssertThrowsError(
+            try ManualEntryValidator.validate(
+                ManualHealthEntry(metric: .oxygenSaturation, value: 98, date: now),
+                now: now
+            )
+        ) { error in
+            XCTAssertEqual(error as? ManualEntryValidationError, .outOfRange)
+        }
+    }
+
+    func testRejectsReadOnlyAndFutureEntriesAtWriteBoundary() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertThrowsError(
+            try ManualEntryValidator.validate(
+                ManualHealthEntry(metric: .steps, value: 1_000, date: now),
+                now: now
+            )
+        ) { error in
+            XCTAssertEqual(error as? ManualEntryValidationError, .readOnlyMetric)
+        }
+
+        XCTAssertThrowsError(
+            try ManualEntryValidator.validate(
+                ManualHealthEntry(metric: .water, value: 12, date: now.addingTimeInterval(1)),
+                now: now
+            )
+        ) { error in
+            XCTAssertEqual(error as? ManualEntryValidationError, .futureDate)
+        }
+    }
 }

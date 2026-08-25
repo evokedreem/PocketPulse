@@ -104,7 +104,7 @@ final class HealthKitStore: HealthDataProviding, @unchecked Sendable {
 
     func save(_ entry: ManualHealthEntry) async throws {
         guard isHealthDataAvailable else { throw HealthKitStoreError.unavailable }
-        guard entry.metric.isWritable else { throw HealthKitStoreError.readOnlyMetric }
+        try ManualEntryValidator.validate(entry)
         guard let sampleType = entry.metric.healthKitSampleType else {
             throw HealthKitStoreError.unsupportedMetric(entry.metric.title)
         }
@@ -116,12 +116,12 @@ final class HealthKitStore: HealthDataProviding, @unchecked Sendable {
             guard let categoryType = sampleType as? HKCategoryType else {
                 throw HealthKitStoreError.unsupportedMetric(entry.metric.title)
             }
-            let endDate = entry.date.addingTimeInterval(entry.value * 60)
+            let startDate = entry.date.addingTimeInterval(-(entry.value * 60))
             sample = HKCategorySample(
                 type: categoryType,
                 value: HKCategoryValue.notApplicable.rawValue,
-                start: entry.date,
-                end: endDate,
+                start: startDate,
+                end: entry.date,
                 metadata: metadata
             )
         } else {
@@ -191,7 +191,10 @@ final class HealthKitStore: HealthDataProviding, @unchecked Sendable {
             let samples = try await categorySamples(type: categoryType, start: start, end: now)
             let relevant = samples.filter { metric.includes(categorySample: $0) }
             guard !relevant.isEmpty else { return nil }
-            let seconds = relevant.reduce(0) { $0 + $1.endDate.timeIntervalSince($1.startDate) }
+            let seconds = HealthDurationAccumulator.totalSeconds(
+                in: relevant.map { DateInterval(start: $0.startDate, end: $0.endDate) },
+                clippedTo: DateInterval(start: start, end: now)
+            )
             let divisor = metric == .sleep ? 3_600.0 : 60.0
             return HealthMetricValue(
                 metric: metric,
@@ -282,19 +285,11 @@ final class HealthKitStore: HealthDataProviding, @unchecked Sendable {
     ) async throws -> [MetricDataPoint] {
         let samples = try await categorySamples(type: type, start: start, end: end)
             .filter { metric.includes(categorySample: $0) }
-        var secondsByDay: [Date: TimeInterval] = [:]
-
-        for sample in samples {
-            var cursor = max(sample.startDate, start)
-            let sampleEnd = min(sample.endDate, end)
-            while cursor < sampleEnd {
-                let day = calendar.startOfDay(for: cursor)
-                let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? sampleEnd
-                let segmentEnd = min(nextDay, sampleEnd)
-                secondsByDay[day, default: 0] += segmentEnd.timeIntervalSince(cursor)
-                cursor = segmentEnd
-            }
-        }
+        let secondsByDay = HealthDurationAccumulator.secondsByDay(
+            in: samples.map { DateInterval(start: $0.startDate, end: $0.endDate) },
+            clippedTo: DateInterval(start: start, end: end),
+            calendar: calendar
+        )
 
         let divisor = metric == .sleep ? 3_600.0 : 60.0
         return secondsByDay

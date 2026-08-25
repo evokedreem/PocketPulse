@@ -47,7 +47,7 @@ struct HealthPrivacyView: View {
                 }
 
                 LabeledContent("Connection", value: connectionLabel)
-                LabeledContent("Loaded categories", value: "\(model.summary.values.count)")
+                LabeledContent("Loaded categories", value: "\(loadedCategoryCount)")
             }
 
             Section("How Synchronization Works") {
@@ -100,12 +100,16 @@ struct HealthPrivacyView: View {
 
     private var connectionLabel: String {
         switch model.state {
-        case .ready: "Connected"
+        case .ready: "Access reviewed"
         case .unavailable: "Unavailable"
         case .requesting, .loading: "Refreshing"
         case .failed: "Needs attention"
-        case .notRequested: "Not connected"
+        case .notRequested: "Not reviewed"
         }
+    }
+
+    private var loadedCategoryCount: Int {
+        Set(model.summary.values.keys.map(\.category)).count
     }
 
     private var exportText: String {
